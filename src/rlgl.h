@@ -1956,12 +1956,12 @@ void rlEnableBackfaceCulling(void) { glEnable(GL_CULL_FACE); }
 void rlDisableBackfaceCulling(void) { glDisable(GL_CULL_FACE); }
 
 // Set color mask active for screen read/draw
-void rlColorMask(bool r, bool g, bool b, bool a) 
-{ 
-#if defined(PLATFORM_NINTENDO64) 
-#else 
+void rlColorMask(bool r, bool g, bool b, bool a)
+{
+#if defined(PLATFORM_NINTENDO64)
+#else
     glColorMask(r, g, b, a);
-#endif 
+#endif
 }
 
 // Set face culling mode
@@ -2284,7 +2284,7 @@ void rlglInit(int width, int height)
 
     // Init default vertex arrays buffers
     // Simulate that the default shader has the location RL_SHADER_LOC_VERTEX_NORMAL to bind the normal buffer for the default render batch
-#if !defined(PLATFORM_VITA) 
+#if !defined(PLATFORM_VITA)
     RLGL.State.currentShaderLocs[RL_SHADER_LOC_VERTEX_NORMAL] = RL_DEFAULT_SHADER_ATTRIB_LOCATION_NORMAL;
 #endif
     RLGL.defaultBatch = rlLoadRenderBatch(RL_DEFAULT_BATCH_BUFFERS, RL_DEFAULT_BATCH_BUFFER_ELEMENTS);
@@ -2308,7 +2308,7 @@ void rlglInit(int width, int height)
     glDepthFunc(GL_LESS_INTERPENETRATING_N64);              // Type of depth testing to apply
 #else
     glDepthFunc(GL_LEQUAL);                                 // Type of depth testing to apply
-#endif                                
+#endif
     glDisable(GL_DEPTH_TEST);                               // Disable depth testing for 2D (only used for 3D)
 
     // Init state: Blending mode
@@ -2954,14 +2954,14 @@ void rlDrawRenderBatch(rlRenderBatch *batch)
         glBufferSubData(GL_ARRAY_BUFFER, 0, RLGL.State.vertexCounter*3*sizeof(float), batch->vertexBuffer[batch->currentBuffer].vertices);
 #else
         glBufferData(GL_ARRAY_BUFFER, sizeof(float)*3*4*batch->vertexBuffer[batch->currentBuffer].elementCount, batch->vertexBuffer[batch->currentBuffer].vertices, GL_DYNAMIC_DRAW);  // Update all buffer
-#endif        
+#endif
         //glBufferData(GL_ARRAY_BUFFER, sizeof(float)*3*4*batch->vertexBuffer[batch->currentBuffer].elementCount, batch->vertexBuffer[batch->currentBuffer].vertices, GL_DYNAMIC_DRAW);  // Update all buffer
 
         // Texture coordinates buffer
         glBindBuffer(GL_ARRAY_BUFFER, batch->vertexBuffer[batch->currentBuffer].vboId[1]);
 #if !defined(PLATFORM_PROSPERO)
         glBufferSubData(GL_ARRAY_BUFFER, 0, RLGL.State.vertexCounter*2*sizeof(float), batch->vertexBuffer[batch->currentBuffer].texcoords);
-#else        
+#else
         glBufferData(GL_ARRAY_BUFFER, sizeof(float)*2*4*batch->vertexBuffer[batch->currentBuffer].elementCount, batch->vertexBuffer[batch->currentBuffer].texcoords, GL_DYNAMIC_DRAW); // Update all buffer
 #endif
         //glBufferData(GL_ARRAY_BUFFER, sizeof(float)*2*4*batch->vertexBuffer[batch->currentBuffer].elementCount, batch->vertexBuffer[batch->currentBuffer].texcoords, GL_DYNAMIC_DRAW); // Update all buffer
@@ -2969,18 +2969,18 @@ void rlDrawRenderBatch(rlRenderBatch *batch)
         // Normals buffer
 #if !defined(PLATFORM_VITA)
         glBindBuffer(GL_ARRAY_BUFFER, batch->vertexBuffer[batch->currentBuffer].vboId[2]);
-#if !defined(PLATFORM_PROSPERO)        
+#if !defined(PLATFORM_PROSPERO)
         glBufferSubData(GL_ARRAY_BUFFER, 0, RLGL.State.vertexCounter*3*sizeof(float), batch->vertexBuffer[batch->currentBuffer].normals);
-#else        
+#else
         glBufferData(GL_ARRAY_BUFFER, sizeof(float)*3*4*batch->vertexBuffer[batch->currentBuffer].elementCount, batch->vertexBuffer[batch->currentBuffer].normals, GL_DYNAMIC_DRAW); // Update all buffer
 #endif
 #endif
 
         // Colors buffer
         glBindBuffer(GL_ARRAY_BUFFER, batch->vertexBuffer[batch->currentBuffer].vboId[3]);
-#if !defined(PLATFORM_PROSPERO)        
+#if !defined(PLATFORM_PROSPERO)
         glBufferSubData(GL_ARRAY_BUFFER, 0, RLGL.State.vertexCounter*4*sizeof(unsigned char), batch->vertexBuffer[batch->currentBuffer].colors);
-#else        
+#else
         glBufferData(GL_ARRAY_BUFFER, sizeof(float)*4*4*batch->vertexBuffer[batch->currentBuffer].elementCount, batch->vertexBuffer[batch->currentBuffer].colors, GL_DYNAMIC_DRAW);    // Update all buffer
 #endif
         //glBufferData(GL_ARRAY_BUFFER, sizeof(float)*4*4*batch->vertexBuffer[batch->currentBuffer].elementCount, batch->vertexBuffer[batch->currentBuffer].colors, GL_DYNAMIC_DRAW);    // Update all buffer
@@ -3367,7 +3367,7 @@ unsigned int rlLoadTexture(const void *data, int width, int height, int format, 
     }
 #endif
 
-#if defined(PLATFORM_NINTENDO64) //glTextParameter must be set before upload to gpu 
+#if defined(PLATFORM_NINTENDO64) //glTextParameter must be set before upload to gpu
     rlLoadTextureN64(data,width,height,format,mipmapCount);
 #endif
     // At this point we have the texture loaded in GPU and texture parameters configured
@@ -3474,9 +3474,9 @@ unsigned int rlLoadTextureCubemap(const void *data, int size, int format, int mi
             {
                 if (format < RL_PIXELFORMAT_COMPRESSED_DXT1_RGB)
                 {
-                    if ((format == RL_PIXELFORMAT_UNCOMPRESSED_R32) || 
+                    if ((format == RL_PIXELFORMAT_UNCOMPRESSED_R32) ||
                         (format == RL_PIXELFORMAT_UNCOMPRESSED_R32G32B32A32) ||
-                        (format == RL_PIXELFORMAT_UNCOMPRESSED_R16) || 
+                        (format == RL_PIXELFORMAT_UNCOMPRESSED_R16) ||
                         (format == RL_PIXELFORMAT_UNCOMPRESSED_R16G16B16A16)) TRACELOG(RL_LOG_WARNING, "TEXTURES: Cubemap requested format not supported");
                     else glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, mipmapLevel, glInternalFormat, mipSize, mipSize, 0, glFormat, glType, NULL);
                 }
@@ -4051,7 +4051,11 @@ void rlEnableStatePointer(int vertexAttribType, void *buffer)
         case GL_VERTEX_ARRAY: glVertexPointer(3, GL_FLOAT, 0, buffer); break;
         case GL_TEXTURE_COORD_ARRAY: glTexCoordPointer(2, GL_FLOAT, 0, buffer); break;
         case GL_NORMAL_ARRAY: if (buffer != NULL) glNormalPointer(GL_FLOAT, 0, buffer); break;
+        #if defined(__DREAMCAST__)
+        case GL_COLOR_ARRAY: if (buffer != NULL) glColorPointer(GL_BGRA, GL_UNSIGNED_BYTE, 0, buffer); break;
+        #else
         case GL_COLOR_ARRAY: if (buffer != NULL) glColorPointer(4, GL_UNSIGNED_BYTE, 0, buffer); break;
+        #endif
         //case GL_INDEX_ARRAY: if (buffer != NULL) glIndexPointer(GL_SHORT, 0, buffer); break; // Indexed colors
         default: break;
     }
@@ -4947,7 +4951,7 @@ static void rlLoadShaderDefault(void)
     "uniform float4 colDiffuse,        \n"
     "float4 out finalColor)         \n"
     "{                                  \n"
-    "    float4 texelColor = tex2D(texture0, fragTexCoord); \n" 
+    "    float4 texelColor = tex2D(texture0, fragTexCoord); \n"
     "    finalColor=texelColor*colDiffuse*fragColor;      \n"
     "}                                  \n";
 #else

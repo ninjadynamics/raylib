@@ -1073,6 +1073,10 @@ RLAPI Matrix GetCameraMatrix2D(Camera2D camera);                        // Get c
 // Timing-related functions
 RLAPI void SetTargetFPS(int fps);                                 // Set target FPS (maximum)
 RLAPI float GetFrameTime(void);                                   // Get time in seconds for last frame drawn (delta time)
+RLAPI float GetFrameTimeWithoutWait(void);                        // Get time in seconds for last frame drawn, excluding target FPS wait time
+RLAPI float GetDrawTime(void);                                    // Get time in seconds spent on last frame draw and buffer swap
+RLAPI float GetSwapTime(void);                                    // Get time in seconds spent swapping buffers on last frame
+RLAPI float GetFrameWaitTime(void);                               // Get time in seconds spent waiting for the target FPS on last frame
 RLAPI double GetTime(void);                                       // Get elapsed time in seconds since InitWindow()
 RLAPI int GetFPS(void);                                           // Get current FPS
 

@@ -372,6 +372,7 @@ typedef struct CoreData {
         double previous;                    // Previous time measure
         double update;                      // Time measure for frame update
         double draw;                        // Time measure for frame draw
+        double swap;                        // Time measure for frame buffer swap
         double frame;                       // Time measure for one frame
         double target;                      // Desired time for one frame, if 0 not applied
         unsigned long long int base;        // Base time measure for hi-res timer (PLATFORM_ANDROID, PLATFORM_DRM)
@@ -632,8 +633,8 @@ void InitWindow(int width, int height, const char *title)
 {
 #if defined(PLATFORM_PSP) || defined(PLATFORM_VITA) || defined(PLATFORM_ORBIS) || defined(PLATFORM_PROSPERO)
     SetTraceLogCallback(CustomLog);
-#endif  
-    TRACELOG(LOG_INFO, "Initializing raylib %s", RAYLIB_VERSION);
+#endif
+    TRACELOG(LOG_INFO, "Initializing MODIFIED raylib %s", RAYLIB_VERSION);
 
 #if defined(PLATFORM_DESKTOP_GLFW)
     TRACELOG(LOG_INFO, "Platform backend: DESKTOP (GLFW)");
@@ -1002,10 +1003,12 @@ void EndDrawing(void)
 #endif
 
 #if !defined(SUPPORT_CUSTOM_FRAME_CONTROL)
+    double swapStart = GetTime();
     SwapScreenBuffer();                  // Copy back buffer to front buffer (screen)
 
     // Frame time control system
     CORE.Time.current = GetTime();
+    CORE.Time.swap = CORE.Time.current - swapStart;
     CORE.Time.draw = CORE.Time.current - CORE.Time.previous;
     CORE.Time.previous = CORE.Time.current;
 
@@ -1765,6 +1768,34 @@ int GetFPS(void)
 float GetFrameTime(void)
 {
     return (float)CORE.Time.frame;
+}
+
+// Get time in seconds for last frame drawn, excluding target FPS wait time
+float GetFrameTimeWithoutWait(void)
+{
+    return (float)(CORE.Time.update + CORE.Time.draw);
+}
+
+// Get time in seconds for last frame draw and buffer swap
+float GetDrawTime(void)
+{
+    return (float)CORE.Time.draw;
+}
+
+// Get time in seconds spent swapping buffers on last frame
+float GetSwapTime(void)
+{
+    return (float)CORE.Time.swap;
+}
+
+// Get time in seconds spent waiting for the target FPS on last frame
+float GetFrameWaitTime(void)
+{
+    double waitTime = CORE.Time.frame - (CORE.Time.update + CORE.Time.draw);
+
+    if (waitTime < 0.0) waitTime = 0.0;
+
+    return (float)waitTime;
 }
 
 //----------------------------------------------------------------------------------
