@@ -899,6 +899,10 @@ RLAPI void rlLoadDrawQuad(void);     // Load and draw a quad
 #include <string.h>                     // Required for: strcmp(), strlen() [Used in rlglInit(), on extensions loading]
 #include <math.h>                       // Required for: sqrtf(), sinf(), cosf(), floor(), log()
 
+#if defined(PLATFORM_DREAMCAST)
+#include "rlgl_dc_batch.h"              // Dreamcast immediate-mode batcher (Patches A+D)
+#endif
+
 //----------------------------------------------------------------------------------
 // Defines and Macros
 //----------------------------------------------------------------------------------
@@ -1188,21 +1192,62 @@ void rlMatrixMode(int mode)
 
 void rlFrustum(double left, double right, double bottom, double top, double znear, double zfar)
 {
+#if defined(PLATFORM_DREAMCAST)
+    rlDcFlushOnMatrixChange();
+#endif
     glFrustum(left, right, bottom, top, znear, zfar);
 }
 
 void rlOrtho(double left, double right, double bottom, double top, double znear, double zfar)
 {
+#if defined(PLATFORM_DREAMCAST)
+    rlDcFlushOnMatrixChange();
+#endif
     glOrtho(left, right, bottom, top, znear, zfar);
 }
 
-void rlPushMatrix(void) { glPushMatrix(); }
-void rlPopMatrix(void) { glPopMatrix(); }
-void rlLoadIdentity(void) { glLoadIdentity(); }
-void rlTranslatef(float x, float y, float z) { glTranslatef(x, y, z); }
-void rlRotatef(float angle, float x, float y, float z) { glRotatef(angle, x, y, z); }
-void rlScalef(float x, float y, float z) { glScalef(x, y, z); }
-void rlMultMatrixf(const float *matf) { glMultMatrixf(matf); }
+void rlPushMatrix(void) {
+#if defined(PLATFORM_DREAMCAST)
+    rlDcFlushOnMatrixChange();
+#endif
+    glPushMatrix();
+}
+void rlPopMatrix(void) {
+#if defined(PLATFORM_DREAMCAST)
+    rlDcFlushOnMatrixChange();
+#endif
+    glPopMatrix();
+}
+void rlLoadIdentity(void) {
+#if defined(PLATFORM_DREAMCAST)
+    rlDcFlushOnMatrixChange();
+#endif
+    glLoadIdentity();
+}
+void rlTranslatef(float x, float y, float z) {
+#if defined(PLATFORM_DREAMCAST)
+    rlDcFlushOnMatrixChange();
+#endif
+    glTranslatef(x, y, z);
+}
+void rlRotatef(float angle, float x, float y, float z) {
+#if defined(PLATFORM_DREAMCAST)
+    rlDcFlushOnMatrixChange();
+#endif
+    glRotatef(angle, x, y, z);
+}
+void rlScalef(float x, float y, float z) {
+#if defined(PLATFORM_DREAMCAST)
+    rlDcFlushOnMatrixChange();
+#endif
+    glScalef(x, y, z);
+}
+void rlMultMatrixf(const float *matf) {
+#if defined(PLATFORM_DREAMCAST)
+    rlDcFlushOnMatrixChange();
+#endif
+    glMultMatrixf(matf);
+}
 #endif
 #if defined(GRAPHICS_API_OPENGL_33) || defined(GRAPHICS_API_OPENGL_ES2)
 // Choose the current matrix to be transformed
@@ -1436,6 +1481,9 @@ double rlGetCullDistanceFar(void)
 //---------------------------------------
 void rlBegin(int mode)
 {
+#if defined(PLATFORM_DREAMCAST)
+    if (rlDcBegin(mode)) return;  // Captured by batcher
+#endif
     switch (mode)
     {
         case RL_LINES: glBegin(GL_LINES); break;
@@ -1445,15 +1493,91 @@ void rlBegin(int mode)
     }
 }
 
-void rlEnd(void) { glEnd(); }
-void rlVertex2i(int x, int y) { glVertex2i(x, y); }
-void rlVertex2f(float x, float y) { glVertex2f(x, y); }
-void rlVertex3f(float x, float y, float z) { glVertex3f(x, y, z); }
-void rlTexCoord2f(float x, float y) { glTexCoord2f(x, y); }
-void rlNormal3f(float x, float y, float z) { glNormal3f(x, y, z); }
-void rlColor4ub(unsigned char r, unsigned char g, unsigned char b, unsigned char a) { glColor4ub(r, g, b, a); }
-void rlColor3f(float x, float y, float z) { glColor3f(x, y, z); }
-void rlColor4f(float x, float y, float z, float w) { glColor4f(x, y, z, w); }
+void rlEnd(void)
+{
+#if defined(PLATFORM_DREAMCAST)
+    if (rlDcBatch.active) { rlDcEnd(); return; }
+#endif
+    glEnd();
+}
+
+void rlVertex2i(int x, int y)
+{
+#if defined(PLATFORM_DREAMCAST)
+    if (rlDcBatch.active) { rlDcAppendVertex((float)x, (float)y, 0.0f); return; }
+#endif
+    glVertex2i(x, y);
+}
+
+void rlVertex2f(float x, float y)
+{
+#if defined(PLATFORM_DREAMCAST)
+    if (rlDcBatch.active) { rlDcAppendVertex(x, y, 0.0f); return; }
+#endif
+    glVertex2f(x, y);
+}
+
+void rlVertex3f(float x, float y, float z)
+{
+#if defined(PLATFORM_DREAMCAST)
+    if (rlDcBatch.active) { rlDcAppendVertex(x, y, z); return; }
+#endif
+    glVertex3f(x, y, z);
+}
+
+void rlTexCoord2f(float x, float y)
+{
+#if defined(PLATFORM_DREAMCAST)
+    rlDcBatch.curU = x;
+    rlDcBatch.curV = y;
+    if (rlDcBatch.active) return;
+#endif
+    glTexCoord2f(x, y);
+}
+
+void rlNormal3f(float x, float y, float z)
+{
+#if defined(PLATFORM_DREAMCAST)
+    if (rlDcBatch.active) return;  // Normals skipped for 2D fast path
+#endif
+    glNormal3f(x, y, z);
+}
+
+void rlColor4ub(unsigned char r, unsigned char g, unsigned char b, unsigned char a)
+{
+#if defined(PLATFORM_DREAMCAST)
+    rlDcBatch.curR = r;
+    rlDcBatch.curG = g;
+    rlDcBatch.curB = b;
+    rlDcBatch.curA = a;
+    if (rlDcBatch.active) return;
+#endif
+    glColor4ub(r, g, b, a);
+}
+
+void rlColor3f(float x, float y, float z)
+{
+#if defined(PLATFORM_DREAMCAST)
+    rlDcBatch.curR = (unsigned char)(x * 255.0f);
+    rlDcBatch.curG = (unsigned char)(y * 255.0f);
+    rlDcBatch.curB = (unsigned char)(z * 255.0f);
+    rlDcBatch.curA = 255;
+    if (rlDcBatch.active) return;
+#endif
+    glColor3f(x, y, z);
+}
+
+void rlColor4f(float x, float y, float z, float w)
+{
+#if defined(PLATFORM_DREAMCAST)
+    rlDcBatch.curR = (unsigned char)(x * 255.0f);
+    rlDcBatch.curG = (unsigned char)(y * 255.0f);
+    rlDcBatch.curB = (unsigned char)(z * 255.0f);
+    rlDcBatch.curA = (unsigned char)(w * 255.0f);
+    if (rlDcBatch.active) return;
+#endif
+    glColor4f(x, y, z, w);
+}
 #endif
 #if defined(GRAPHICS_API_OPENGL_33) || defined(GRAPHICS_API_OPENGL_ES2)
 // Initialize drawing mode (how to organize vertex)
@@ -1642,7 +1766,11 @@ void rlSetTexture(unsigned int id)
     if (id == 0)
     {
 #if defined(GRAPHICS_API_OPENGL_11)
+#if defined(PLATFORM_DREAMCAST)
+        rlDcSetTexture(0);  // Deferred unbind
+#else
         rlDisableTexture();
+#endif
 #else
         // NOTE: If quads batch limit is reached, we force a draw call and next batch starts
         if (RLGL.State.vertexCounter >=
@@ -1655,7 +1783,11 @@ void rlSetTexture(unsigned int id)
     else
     {
 #if defined(GRAPHICS_API_OPENGL_11)
+#if defined(PLATFORM_DREAMCAST)
+        rlDcSetTexture(id);  // Batcher-aware texture set with deferred unbind
+#else
         rlEnableTexture(id);
+#endif
 #else
         if (RLGL.currentBatch->draws[RLGL.currentBatch->drawCounter - 1].textureId != id)
         {
@@ -1698,6 +1830,10 @@ void rlActiveTextureSlot(int slot)
 // Enable texture
 void rlEnableTexture(unsigned int id)
 {
+#if defined(PLATFORM_DREAMCAST)
+    rlDcFlushOnStateChange();
+    rlDcBatch.textureId = id;
+#endif
 #if defined(GRAPHICS_API_OPENGL_11)
     glEnable(GL_TEXTURE_2D);
 #endif
@@ -1707,6 +1843,10 @@ void rlEnableTexture(unsigned int id)
 // Disable texture
 void rlDisableTexture(void)
 {
+#if defined(PLATFORM_DREAMCAST)
+    rlDcFlushOnStateChange();
+    rlDcBatch.textureId = 0;
+#endif
 #if defined(GRAPHICS_API_OPENGL_11)
     glDisable(GL_TEXTURE_2D);
 #endif
@@ -1932,32 +2072,75 @@ void rlActiveDrawBuffers(int count)
 //----------------------------------------------------------------------------------
 
 // Enable color blending
-void rlEnableColorBlend(void) { glEnable(GL_BLEND); }
+void rlEnableColorBlend(void) {
+#if defined(PLATFORM_DREAMCAST)
+    rlDcFlushOnStateChange();
+#endif
+    glEnable(GL_BLEND);
+}
 
 // Disable color blending
-void rlDisableColorBlend(void) { glDisable(GL_BLEND); }
+void rlDisableColorBlend(void) {
+#if defined(PLATFORM_DREAMCAST)
+    rlDcFlushOnStateChange();
+#endif
+    glDisable(GL_BLEND);
+}
 
 // Enable depth test
-void rlEnableDepthTest(void) { glEnable(GL_DEPTH_TEST); }
+void rlEnableDepthTest(void) {
+#if defined(PLATFORM_DREAMCAST)
+    rlDcFlushOnStateChange();
+#endif
+    glEnable(GL_DEPTH_TEST);
+}
 
 // Disable depth test
-void rlDisableDepthTest(void) { glDisable(GL_DEPTH_TEST); }
+void rlDisableDepthTest(void) {
+#if defined(PLATFORM_DREAMCAST)
+    rlDcFlushOnStateChange();
+#endif
+    glDisable(GL_DEPTH_TEST);
+}
 
 // Enable depth write
-void rlEnableDepthMask(void) { glDepthMask(GL_TRUE); }
+void rlEnableDepthMask(void) {
+#if defined(PLATFORM_DREAMCAST)
+    rlDcFlushOnStateChange();
+#endif
+    glDepthMask(GL_TRUE);
+}
 
 // Disable depth write
-void rlDisableDepthMask(void) { glDepthMask(GL_FALSE); }
+void rlDisableDepthMask(void) {
+#if defined(PLATFORM_DREAMCAST)
+    rlDcFlushOnStateChange();
+#endif
+    glDepthMask(GL_FALSE);
+}
 
 // Enable backface culling
-void rlEnableBackfaceCulling(void) { glEnable(GL_CULL_FACE); }
+void rlEnableBackfaceCulling(void) {
+#if defined(PLATFORM_DREAMCAST)
+    rlDcFlushOnStateChange();
+#endif
+    glEnable(GL_CULL_FACE);
+}
 
 // Disable backface culling
-void rlDisableBackfaceCulling(void) { glDisable(GL_CULL_FACE); }
+void rlDisableBackfaceCulling(void) {
+#if defined(PLATFORM_DREAMCAST)
+    rlDcFlushOnStateChange();
+#endif
+    glDisable(GL_CULL_FACE);
+}
 
 // Set color mask active for screen read/draw
 void rlColorMask(bool r, bool g, bool b, bool a)
 {
+#if defined(PLATFORM_DREAMCAST)
+    rlDcFlushOnStateChange();
+#endif
 #if defined(PLATFORM_NINTENDO64)
 #else
     glColorMask(r, g, b, a);
@@ -1967,6 +2150,9 @@ void rlColorMask(bool r, bool g, bool b, bool a)
 // Set face culling mode
 void rlSetCullFace(int mode)
 {
+#if defined(PLATFORM_DREAMCAST)
+    rlDcFlushOnStateChange();
+#endif
     switch (mode)
     {
         case RL_CULL_FACE_BACK: glCullFace(GL_BACK); break;
@@ -1976,13 +2162,28 @@ void rlSetCullFace(int mode)
 }
 
 // Enable scissor test
-void rlEnableScissorTest(void) { glEnable(GL_SCISSOR_TEST); }
+void rlEnableScissorTest(void) {
+#if defined(PLATFORM_DREAMCAST)
+    rlDcFlushOnStateChange();
+#endif
+    glEnable(GL_SCISSOR_TEST);
+}
 
 // Disable scissor test
-void rlDisableScissorTest(void) { glDisable(GL_SCISSOR_TEST); }
+void rlDisableScissorTest(void) {
+#if defined(PLATFORM_DREAMCAST)
+    rlDcFlushOnStateChange();
+#endif
+    glDisable(GL_SCISSOR_TEST);
+}
 
 // Scissor test
-void rlScissor(int x, int y, int width, int height) { glScissor(x, y, width, height); }
+void rlScissor(int x, int y, int width, int height) {
+#if defined(PLATFORM_DREAMCAST)
+    rlDcFlushOnStateChange();
+#endif
+    glScissor(x, y, width, height);
+}
 
 // Enable wire mode
 void rlEnableWireMode(void)
@@ -2080,6 +2281,9 @@ void rlClearColor(unsigned char r, unsigned char g, unsigned char b, unsigned ch
 // Clear used screen buffers (color and depth)
 void rlClearScreenBuffers(void)
 {
+#if defined(PLATFORM_DREAMCAST)
+    rlDcFlushAll();  // Ensure pending geometry is submitted before clear
+#endif
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);     // Clear used buffers: Color and Depth (Depth is used for 3D)
     //glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);     // Stencil buffer not used...
 }
@@ -3191,6 +3395,9 @@ void rlSetRenderBatchActive(rlRenderBatch *batch)
 // Update and draw internal render batch
 void rlDrawRenderBatchActive(void)
 {
+#if defined(PLATFORM_DREAMCAST)
+    rlDcFlushAll();  // Flush pending batched geometry before frame end
+#endif
 #if defined(GRAPHICS_API_OPENGL_33) || defined(GRAPHICS_API_OPENGL_ES2)
     rlDrawRenderBatch(RLGL.currentBatch);    // NOTE: Stereo rendering is checked inside
 #endif
@@ -4008,12 +4215,18 @@ void rlDisableVertexAttribute(unsigned int index)
 // Draw vertex array
 void rlDrawVertexArray(int offset, int count)
 {
+#if defined(PLATFORM_DREAMCAST)
+    rlDcFlushOnStateChange();  // Flush batcher to preserve draw ordering
+#endif
     glDrawArrays(GL_TRIANGLES, offset, count);
 }
 
 // Draw vertex array elements
 void rlDrawVertexArrayElements(int offset, int count, const void *buffer)
 {
+#if defined(PLATFORM_DREAMCAST)
+    rlDcFlushOnStateChange();  // Flush batcher to preserve draw ordering
+#endif
     // NOTE: Added pointer math separately from function to avoid UBSAN complaining
     unsigned short *bufferPtr = (unsigned short *)buffer;
     if (offset > 0) bufferPtr += offset;
