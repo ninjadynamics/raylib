@@ -634,7 +634,12 @@ void InitWindow(int width, int height, const char *title)
 #if defined(PLATFORM_PSP) || defined(PLATFORM_VITA) || defined(PLATFORM_ORBIS) || defined(PLATFORM_PROSPERO)
     SetTraceLogCallback(CustomLog);
 #endif
-    TRACELOG(LOG_INFO, "Initializing MODIFIED LOCAL raylib %s [2026.04.29 10:20]", RAYLIB_VERSION);
+    TRACELOG(LOG_INFO, "Initializing MODIFIED LOCAL raylib %s [2026.04.29 23:38]", RAYLIB_VERSION);
+#ifdef USE_SH4ZAM
+    TRACELOG(LOG_INFO, "Hello SH4ZAM!\n");
+#else
+    TRACELOG(LOG_INFO, "SH4ZAM is NOT enabled.\n");
+#endif
 
 #if defined(PLATFORM_DESKTOP_GLFW)
     TRACELOG(LOG_INFO, "Platform backend: DESKTOP (GLFW)");

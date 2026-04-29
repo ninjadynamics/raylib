@@ -763,6 +763,13 @@ ifeq ($(TARGET_PLATFORM),PLATFORM_ANDROID)
     LDLIBS = -llog -landroid -lEGL -lGLESv2 -lOpenSLES -lc -lm
 endif
 
+USE_SH4ZAM ?= 0
+
+ifeq ($(USE_SH4ZAM),1)
+    CFLAGS += -DUSE_SH4ZAM
+    LDLIBS += -lsh4zam
+endif
+
 # Define source code object files required
 #------------------------------------------------------------------------------------------------
 OBJS = rcore.o \

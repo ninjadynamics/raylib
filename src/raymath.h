@@ -110,6 +110,56 @@
 #endif
 
 //----------------------------------------------------------------------------------
+// SH4ZAM accelerated math (Dreamcast SH4 hardware)
+//----------------------------------------------------------------------------------
+#ifdef USE_SH4ZAM
+#include <sh4zam/shz_vector.h>
+#include <sh4zam/shz_matrix.h>
+#include <sh4zam/shz_quat.h>
+#include <sh4zam/shz_xmtrx.h>
+
+// Raylib Matrix is row-major in memory (m0,m4,m8,m12 contiguous)
+// sh4zam mat4x4_t is column-major in memory (col[0]={m0,m1,m2,m3} contiguous)
+// These are transposed relative to each other.
+//
+// Raylib memory:  [m0 m4 m8 m12 | m1 m5 m9 m13 | m2 m6 m10 m14 | m3 m7 m11 m15]
+// sh4zam memory:  [m0 m1 m2 m3  | m4 m5 m6 m7  | m8 m9 m10 m11 | m12 m13 m14 m15]
+//
+// Since raylib's math semantics already treat the struct as column-major
+// (see CONVENTIONS comment at top), the named members (m0-m15) have identical
+// *semantic* meaning in both systems. The conversion is just a memory reorder.
+
+static inline shz_mat4x4_t _rlShzFromMatrix(Matrix m) {
+    shz_mat4x4_t out;
+    out.elem[0]  = m.m0;  out.elem[1]  = m.m1;  out.elem[2]  = m.m2;  out.elem[3]  = m.m3;
+    out.elem[4]  = m.m4;  out.elem[5]  = m.m5;  out.elem[6]  = m.m6;  out.elem[7]  = m.m7;
+    out.elem[8]  = m.m8;  out.elem[9]  = m.m9;  out.elem[10] = m.m10; out.elem[11] = m.m11;
+    out.elem[12] = m.m12; out.elem[13] = m.m13; out.elem[14] = m.m14; out.elem[15] = m.m15;
+    return out;
+}
+
+static inline Matrix _rlShzToMatrix(shz_mat4x4_t m) {
+    Matrix out;
+    out.m0  = m.elem[0];  out.m1  = m.elem[1];  out.m2  = m.elem[2];  out.m3  = m.elem[3];
+    out.m4  = m.elem[4];  out.m5  = m.elem[5];  out.m6  = m.elem[6];  out.m7  = m.elem[7];
+    out.m8  = m.elem[8];  out.m9  = m.elem[9];  out.m10 = m.elem[10]; out.m11 = m.elem[11];
+    out.m12 = m.elem[12]; out.m13 = m.elem[13]; out.m14 = m.elem[14]; out.m15 = m.elem[15];
+    return out;
+}
+
+// Quaternion conversion: raylib={x,y,z,w}, sh4zam={w,x,y,z}
+static inline shz_quat_t _rlShzFromQuat(Quaternion q) {
+    return shz_quat_init(q.w, q.x, q.y, q.z);
+}
+
+static inline Quaternion _rlShzToQuat(shz_quat_t q) {
+    Quaternion out = { q.x, q.y, q.z, q.w };
+    return out;
+}
+
+#endif /* USE_SH4ZAM */
+
+//----------------------------------------------------------------------------------
 // Types and Structures Definition
 //----------------------------------------------------------------------------------
 #if !defined(RL_VECTOR2_TYPE)
@@ -761,6 +811,12 @@ RMAPI Vector3 Vector3Divide(Vector3 v1, Vector3 v2)
 // Normalize provided vector
 RMAPI Vector3 Vector3Normalize(Vector3 v)
 {
+#ifdef USE_SH4ZAM
+    shz_vec3_t sv = { .x = v.x, .y = v.y, .z = v.z };
+    shz_vec3_t sn = shz_vec3_normalize_safe(sv);
+    Vector3 result = { sn.x, sn.y, sn.z };
+    return result;
+#else
     Vector3 result = v;
 
     float length = sqrtf(v.x*v.x + v.y*v.y + v.z*v.z);
@@ -774,6 +830,7 @@ RMAPI Vector3 Vector3Normalize(Vector3 v)
     }
 
     return result;
+#endif
 }
 
 //Calculate the projection of the vector v1 on to v2
@@ -848,6 +905,14 @@ RMAPI void Vector3OrthoNormalize(Vector3 *v1, Vector3 *v2)
 // Transforms a Vector3 by a given Matrix
 RMAPI Vector3 Vector3Transform(Vector3 v, Matrix mat)
 {
+#ifdef USE_SH4ZAM
+    shz_mat4x4_t sm = _rlShzFromMatrix(mat);
+    shz_xmtrx_load_4x4(&sm);
+    shz_vec4_t sv = { .x = v.x, .y = v.y, .z = v.z, .w = 1.0f };
+    shz_vec4_t sr = shz_xmtrx_transform_vec4(sv);
+    Vector3 result = { sr.x, sr.y, sr.z };
+    return result;
+#else
     Vector3 result = { 0 };
 
     float x = v.x;
@@ -859,6 +924,7 @@ RMAPI Vector3 Vector3Transform(Vector3 v, Matrix mat)
     result.z = mat.m2*x + mat.m6*y + mat.m10*z + mat.m14;
 
     return result;
+#endif
 }
 
 // Transform a vector by quaternion rotation
@@ -1512,6 +1578,12 @@ RMAPI Matrix MatrixTranspose(Matrix mat)
 // Invert provided matrix
 RMAPI Matrix MatrixInvert(Matrix mat)
 {
+#ifdef USE_SH4ZAM
+    shz_mat4x4_t sm = _rlShzFromMatrix(mat);
+    shz_mat4x4_t inv;
+    shz_mat4x4_inverse(&sm, &inv);
+    return _rlShzToMatrix(inv);
+#else
     Matrix result = { 0 };
 
     // Cache the matrix values (speed optimization)
@@ -1554,6 +1626,7 @@ RMAPI Matrix MatrixInvert(Matrix mat)
     result.m15 = (a20*b03 - a21*b01 + a22*b00)*invDet;
 
     return result;
+#endif
 }
 
 // Get identity matrix
@@ -1621,6 +1694,13 @@ RMAPI Matrix MatrixSubtract(Matrix left, Matrix right)
 // NOTE: When multiplying matrices... the order matters!
 RMAPI Matrix MatrixMultiply(Matrix left, Matrix right)
 {
+#ifdef USE_SH4ZAM
+    shz_mat4x4_t sl = _rlShzFromMatrix(left);
+    shz_mat4x4_t sr = _rlShzFromMatrix(right);
+    shz_mat4x4_t sm;
+    shz_mat4x4_mult(&sm, &sl, &sr);
+    return _rlShzToMatrix(sm);
+#else
     Matrix result = { 0 };
 
     result.m0 = left.m0*right.m0 + left.m1*right.m4 + left.m2*right.m8 + left.m3*right.m12;
@@ -1641,6 +1721,7 @@ RMAPI Matrix MatrixMultiply(Matrix left, Matrix right)
     result.m15 = left.m12*right.m3 + left.m13*right.m7 + left.m14*right.m11 + left.m15*right.m15;
 
     return result;
+#endif
 }
 
 // Get translation matrix
@@ -2061,6 +2142,13 @@ RMAPI float QuaternionLength(Quaternion q)
 // Normalize provided quaternion
 RMAPI Quaternion QuaternionNormalize(Quaternion q)
 {
+#ifdef USE_SH4ZAM
+    shz_quat_t sq = _rlShzFromQuat(q);
+    shz_vec4_t sv = *(shz_vec4_t*)&sq;
+    shz_vec4_t sn = shz_vec4_normalize(sv);
+    shz_quat_t nr = *(shz_quat_t*)&sn;
+    return _rlShzToQuat(nr);
+#else
     Quaternion result = { 0 };
 
     float length = sqrtf(q.x*q.x + q.y*q.y + q.z*q.z + q.w*q.w);
@@ -2073,6 +2161,7 @@ RMAPI Quaternion QuaternionNormalize(Quaternion q)
     result.w = q.w*ilength;
 
     return result;
+#endif
 }
 
 // Invert provided quaternion
