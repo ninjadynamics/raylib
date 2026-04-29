@@ -1309,6 +1309,11 @@ BoundingBox GetModelBoundingBox(Model model)
 // Upload vertex data into a VAO (if supported) and VBO
 void UploadMesh(Mesh *mesh, bool dynamic)
 {
+#if (defined(PLATFORM_DREAMCAST) && defined(ENABLE_STRIPS))
+    // Transparent routing: if this mesh has dcmesh strip data,
+    // sync positions and colors to strip vertices and return.
+    if (dcMeshHandleUpload(mesh, dynamic)) return;
+#endif
     if (mesh->vaoId > 0)
     {
         // Check if mesh has already been loaded in GPU
@@ -1675,14 +1680,14 @@ void DrawMesh(Mesh mesh, Material material, Matrix transform)
         }
 #endif
 
-        if (mesh.indices != NULL) 
+        if (mesh.indices != NULL)
         {
 #if defined(PLATFORM_PROSPERO)
             rlDrawVertexArrayElements(0, mesh.triangleCount*3, mesh.indices);
 #else
             rlEnableVertexBufferElement(mesh.vboId[RL_DEFAULT_SHADER_ATTRIB_LOCATION_INDICES]);
 #endif
-        }    
+        }
     }
 
     int eyeCount = 1;
@@ -2383,7 +2388,7 @@ void UpdateModelAnimationBones(Model model, ModelAnimation anim, int frame)
     }
 }
 
-// at least 2x speed up vs the old method 
+// at least 2x speed up vs the old method
 // Update model animated vertex data (positions and normals) for a given frame
 // NOTE: Updated data is uploaded to GPU
 void UpdateModelAnimation(Model model, ModelAnimation anim, int frame)
@@ -4492,7 +4497,7 @@ static Model LoadOBJ(const char *fileName)
         UploadMesh(model.meshes + i, true);
 
     // Restore current working directory
-#if !defined(PLATFORM_VITA) && !defined(PLATFORM_ORBIS) && !defined(PLATFORM_PROSPERO) && !defined(PLATFORM_NINTENDO64)    
+#if !defined(PLATFORM_VITA) && !defined(PLATFORM_ORBIS) && !defined(PLATFORM_PROSPERO) && !defined(PLATFORM_NINTENDO64)
     if (CHDIR(currentDir) != 0)
     {
         TRACELOG(LOG_WARNING, "MODEL: [%s] Failed to change working directory", currentDir);

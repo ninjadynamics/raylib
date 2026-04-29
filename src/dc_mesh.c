@@ -345,6 +345,76 @@ void dcMeshPrintRegistryStats(void) {
 }
 
 /* -------------------------------------------------------------------
+ * Internal: Sync all vertex data from raylib mesh to DCMesh strips
+ *
+ * Called automatically by the UploadMesh hook. Syncs positions and
+ * colors from the raylib mesh arrays into dcmesh strip vertices
+ * using vertex_map for correct index mapping.
+ *
+ * This is why game code doesn't need to call dcMeshRecenterGeometry
+ * or dcMeshSyncColors — UploadMesh handles it transparently.
+ * ---------------------------------------------------------------- */
+static void dcMeshSyncFromRaylib(Mesh *mesh) {
+    if (!mesh) return;
+
+    DCMeshData* data = dcRegistryGet(mesh->vaoId);
+    if (!data) return;
+
+    int sub_idx = DCMESH_SUBMESH_INDEX(mesh->vaoId);
+    if (sub_idx < 0 || sub_idx >= (int)data->submesh_count) return;
+
+    DCSubmesh* sm = &data->submeshes[sub_idx];
+    if (!sm->vertex_map) return;
+
+    int rl_vc = mesh->vertexCount;
+
+    /* Sync positions if available */
+    if (mesh->vertices) {
+        float *verts = mesh->vertices;
+        for (uint32_t v = 0; v < sm->vertex_count; v++) {
+            int si = sm->vertex_map[v];
+            if (si >= rl_vc) si = si % rl_vc;
+            sm->vertices[v].x = verts[si * 3 + 0];
+            sm->vertices[v].y = verts[si * 3 + 1];
+            sm->vertices[v].z = verts[si * 3 + 2];
+        }
+    }
+
+    /* Sync colors if available (RGBA -> BGRA conversion) */
+    if (mesh->colors) {
+        unsigned char *cols = mesh->colors;
+        for (uint32_t v = 0; v < sm->vertex_count; v++) {
+            int si = sm->vertex_map[v];
+            if (si >= rl_vc) si = si % rl_vc;
+            unsigned char r = cols[si * 4 + 0];
+            unsigned char g = cols[si * 4 + 1];
+            unsigned char b = cols[si * 4 + 2];
+            unsigned char a = cols[si * 4 + 3];
+            // TODO: revert red/blue swap once I have this figured out
+            sm->vertices[v].color = ((uint32_t)a << 24) |
+                                    ((uint32_t)b << 16) | // was r
+                                    ((uint32_t)g << 8)  |
+                                    ((uint32_t)r << 0);   // was b
+        }
+    }
+}
+
+/* -------------------------------------------------------------------
+ * Public API: UploadMesh hook — called from patched UploadMesh
+ *
+ * If mesh has dcmesh data, syncs raylib vertex/color data to strips
+ * and returns 1 (caller should skip normal UploadMesh body).
+ * If no dcmesh data, returns 0 (caller runs normally).
+ * ---------------------------------------------------------------- */
+int dcMeshHandleUpload(Mesh *mesh, bool dynamic) {
+    (void)dynamic;
+    if (!mesh || !DCMESH_IS_REGISTRY_ID(mesh->vaoId)) return 0;
+
+    dcMeshSyncFromRaylib(mesh);
+    return 1;  /* Handled — skip normal UploadMesh */
+}
+
+/* -------------------------------------------------------------------
  * Public API: Recenter DCMesh geometry to match recenter_model_geometry()
  *
  * Uses -= to match raylib's recenter convention. Pass the same
@@ -365,56 +435,6 @@ void dcMeshRecenterGeometry(Model *model, float offsetX, float offsetY, float of
             sm->vertices[v].x -= offsetX;
             sm->vertices[v].y -= offsetY;
             sm->vertices[v].z -= offsetZ;
-        }
-    }
-}
-
-/* -------------------------------------------------------------------
- * Public API: Sync per-vertex colors from raylib mesh to DCMesh
- *
- * Call after light_player_model() or any CPU-side per-vertex coloring.
- * Copies raylib's RGBA color bytes into dcmesh's packed BGRA uint32.
- *
- * Only syncs the submesh corresponding to each mesh. If the mesh
- * has no colors or no dcmesh data, silently skips.
- * ---------------------------------------------------------------- */
-void dcMeshSyncColors(Model *model) {
-    if (!model) return;
-
-    for (int i = 0; i < model->meshCount; i++) {
-        Mesh *mesh = &model->meshes[i];
-        if (!mesh->colors) continue;
-
-        DCMeshData* data = dcRegistryGet(mesh->vaoId);
-        if (!data) continue;
-
-        int sub_idx = DCMESH_SUBMESH_INDEX(mesh->vaoId);
-        if (sub_idx < 0 || sub_idx >= (int)data->submesh_count) continue;
-
-        DCSubmesh* sm = &data->submeshes[sub_idx];
-
-        /* raylib stores colors as sequential RGBA bytes per vertex.
-         * DCMesh stores color as packed uint32 in BGRA order.
-         * vertex_map[v] gives the original vertex index that
-         * strip vertex v was expanded from. */
-
-        unsigned char *src = mesh->colors;
-        int rl_vc = mesh->vertexCount;
-
-        for (uint32_t v = 0; v < sm->vertex_count; v++) {
-            int si = sm->vertex_map ? sm->vertex_map[v] : (int)v;
-            if (si >= rl_vc) si = si % rl_vc;  /* Safety clamp */
-
-            unsigned char b = src[si * 4 + 0];
-            unsigned char g = src[si * 4 + 1];
-            unsigned char r = src[si * 4 + 2];
-            unsigned char a = src[si * 4 + 3];
-
-            /* Pack as BGRA uint32 (little-endian: byte0=B, byte1=G, byte2=R, byte3=A) */
-            sm->vertices[v].color = ((uint32_t)a << 24) |
-                                    ((uint32_t)r << 16) |
-                                    ((uint32_t)g << 8)  |
-                                    ((uint32_t)b);
         }
     }
 }

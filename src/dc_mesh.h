@@ -61,6 +61,13 @@ void dcMeshUnloadModel(Model *model);
 /* Check if a mesh has DCMesh strip data loaded. */
 int dcMeshHasStripData(Mesh mesh);
 
+/* UploadMesh hook — if mesh has dcmesh data, syncs positions and colors
+ * from raylib arrays to strip vertices and returns 1.
+ * Returns 0 if no dcmesh data (caller runs normal UploadMesh).
+ * Game code should NOT call this directly — it's called from the
+ * UploadMesh hook in rmodels.c automatically. */
+int dcMeshHandleUpload(Mesh *mesh, bool dynamic);
+
 /* Print DCMesh registry stats (for debugging). */
 void dcMeshPrintRegistryStats(void);
 
@@ -68,11 +75,6 @@ void dcMeshPrintRegistryStats(void);
  * so strip vertices get the same offset as raylib mesh vertices.
  * Pass the SAME (dx, dy, dz) values — uses -= internally. */
 void dcMeshRecenterGeometry(Model *model, float offsetX, float offsetY, float offsetZ);
-
-/* Sync per-vertex colors from raylib mesh to DCMesh strip vertices.
- * Call after light_player_model() or any CPU per-vertex coloring.
- * Converts raylib RGBA to dcmesh BGRA automatically. */
-void dcMeshSyncColors(Model *model);
 
 /* Safe UploadMesh wrapper — temporarily clears the dcmesh vaoId tag
  * to suppress "already loaded" warnings, then restores it.
