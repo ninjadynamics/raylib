@@ -50,7 +50,11 @@
 #if defined(SUPPORT_MODULE_RMODELS)
 
 #include "utils.h"          // Required for: TRACELOG(), LoadFileData(), LoadFileText(), SaveFileText()
-#include "rlgl.h"           // OpenGL abstraction layer to OpenGL 1.1, 2.1, 3.3+ or ES2
+#include "rlgl.h"
+
+#if defined(PLATFORM_DREAMCAST)
+#include "dc_mesh.h"
+#endif           // OpenGL abstraction layer to OpenGL 1.1, 2.1, 3.3+ or ES2
 #include "raymath.h"        // Required for: Vector3, Quaternion and Matrix functionality
 
 #include <stdio.h>          // Required for: sprintf()
@@ -1172,6 +1176,11 @@ Model LoadModel(const char *fileName)
         if (model.meshMaterial == NULL) model.meshMaterial = (int *)RL_CALLOC(model.meshCount, sizeof(int));
     }
 
+#if defined(PLATFORM_DREAMCAST) && ENABLE_STRIPS
+    // Transparent routing: try to load .dcmesh sidecar with pre-computed strips
+    dcMeshLoadSidecar(&model, fileName);
+#endif
+
     return model;
 }
 
@@ -1236,6 +1245,11 @@ bool IsModelValid(Model model)
 // over them, use UnloadMesh() and UnloadMaterial()
 void UnloadModel(Model model)
 {
+#if defined(PLATFORM_DREAMCAST) && ENABLE_STRIPS
+    // Transparent routing: free DCMesh registry data
+    dcMeshUnloadModel(&model);
+#endif
+
     // Unload meshes
     for (int i = 0; i < model.meshCount; i++) UnloadMesh(model.meshes[i]);
 
@@ -1459,6 +1473,13 @@ void UpdateMeshBuffer(Mesh mesh, int index, const void *data, int dataSize, int 
 void DrawMesh(Mesh mesh, Material material, Matrix transform)
 {
 #if defined(GRAPHICS_API_OPENGL_11)
+#if defined(PLATFORM_DREAMCAST) && ENABLE_STRIPS
+    // Transparent routing: use strip/Patch E path if DCMesh data is available
+    if (dcMeshHasStripData(mesh)) {
+        dcMeshDraw(mesh, material, transform);
+        return;
+    }
+#endif
     #define GL_VERTEX_ARRAY         0x8074
     #define GL_NORMAL_ARRAY         0x8075
     #define GL_COLOR_ARRAY          0x8076

@@ -572,28 +572,28 @@ CFLAGS += $(CUSTOM_CFLAGS)
 INCLUDE_PATHS = -I. $(EXTRA_INCLUDE_PATHS)
 
 ifeq ($(PLATFORM),PLATFORM_NINTENDO64)
-    CFLAGS = $(N64_CFLAGS) -Wno-error=incompatible-pointer-types -D$(PLATFORM) -D$(GRAPHICS) 
+    CFLAGS = $(N64_CFLAGS) -Wno-error=incompatible-pointer-types -D$(PLATFORM) -D$(GRAPHICS)
     INCLUDE_PATHS = $(N64_INCLUDEDIR)
 endif
 
 ifeq ($(PLATFORM),PLATFORM_DREAMCAST)
-    CFLAGS = $(KOS_CFLAGS) -Wno-error=incompatible-pointer-types -D$(PLATFORM) -D$(GRAPHICS) 
+    CFLAGS = $(KOS_CFLAGS) -Wno-error=incompatible-pointer-types -D$(PLATFORM) -D$(GRAPHICS)
     INCLUDE_PATHS = $(KOS_INC_PATHS)
 endif
 
 ifeq ($(PLATFORM),PLATFORM_PSP)
-    CFLAGS = -Wl,-q -Wall -Wno-incompatible-pointer-types -Wno-pointer-sign -O3 -nostartfiles -D__PSP__ -D$(PLATFORM) -D$(GRAPHICS) 
+    CFLAGS = -Wl,-q -Wall -Wno-incompatible-pointer-types -Wno-pointer-sign -O3 -nostartfiles -D__PSP__ -D$(PLATFORM) -D$(GRAPHICS)
     INCLUDE_PATHS = -I. -Iinclude -I$(PSPDEV)/psp/include -I$(PSPDEV)/psp/sdk/include
 endif
 
 ifeq ($(PLATFORM),PLATFORM_VITA)
-    CFLAGS = -Wl,-q -Wall -Wno-incompatible-pointer-types -Wno-pointer-sign -O3 -nostartfiles -DVITA -D$(PLATFORM) -D$(GRAPHICS) 
+    CFLAGS = -Wl,-q -Wall -Wno-incompatible-pointer-types -Wno-pointer-sign -O3 -nostartfiles -DVITA -D$(PLATFORM) -D$(GRAPHICS)
     INCLUDE_PATHS = -I.
 endif
 
 ifeq ($(PLATFORM),PLATFORM_ORBIS)
     CFLAGS = -std=c11 -O3 -Wall --target=x86_64-sce-ps4 -D__PS4__ -D__ORBIS__ -D$(PLATFORM) -D$(GRAPHICS)
-    INCLUDE_PATHS = -isysroot $(ORBISDEV) -I. -Iinclude -I$(ORBISDEV)/usr/include/orbis 
+    INCLUDE_PATHS = -isysroot $(ORBISDEV) -I. -Iinclude -I$(ORBISDEV)/usr/include/orbis
     LDFLAGS = -L$(ORBISDEV)/usr/lib -L. -Llib
 endif
 
@@ -769,7 +769,8 @@ OBJS = rcore.o \
        rshapes.o \
        rtextures.o \
        rtext.o \
-       utils.o 
+       utils.o \
+       dc_mesh.o
 
 ifeq ($(TARGET_PLATFORM),PLATFORM_DESKTOP_GLFW)
     ifeq ($(USE_EXTERNAL_GLFW),FALSE)
@@ -894,6 +895,10 @@ utils.o : utils.c utils.h
 
 # Compile models module
 rmodels.o : rmodels.c raylib.h rlgl.h raymath.h
+	$(CC) -c $< $(CFLAGS) $(INCLUDE_PATHS)
+
+# Compile dc_mesh module
+dc_mesh.o : dc_mesh.c dc_mesh.h dcmesh.h raylib.h rlgl.h
 	$(CC) -c $< $(CFLAGS) $(INCLUDE_PATHS)
 
 # Compile audio module

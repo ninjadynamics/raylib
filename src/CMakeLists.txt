@@ -25,10 +25,13 @@ set(raylib_public_headers
     raylib.h
     rlgl.h
     raymath.h
+    dc_mesh.h
+    dcmesh.h
     )
 
 # Sources to be compiled
 set(raylib_sources
+    dc_mesh.c
     raudio.c
     rcore.c
     rmodels.c
