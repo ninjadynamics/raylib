@@ -2,7 +2,7 @@
  * dc_mesh.c — Dreamcast DCMesh Runtime Implementation
  *
  * Phase 2: Strip rendering via GLdc (GL_TRIANGLE_STRIP)
- * Phase 3: Patch E optimized submission (minimal state changes)
+ * Phase 3: Patch E optimized submission (minimal state changes + opaque routing)
  *
  * Drop this file into your raylib src/ directory and add to build.
  * Requires: dcmesh.h, dc_mesh.h, PLATFORM_DREAMCAST defined.
@@ -203,6 +203,40 @@ static int dcPatchEEligible(DCSubmesh* sm, Material material) {
 }
 #endif
 
+typedef struct {
+    int active;
+    GLboolean blend_enabled;
+    GLint blend_src;
+    GLint blend_dst;
+} DCBlendRestore;
+
+static DCBlendRestore dcForceOpaqueBlendOff(int enable) {
+    DCBlendRestore restore = {
+        .active = enable,
+        .blend_enabled = GL_FALSE,
+        .blend_src = GL_SRC_ALPHA,
+        .blend_dst = GL_ONE_MINUS_SRC_ALPHA
+    };
+
+    if (!enable) return restore;
+
+    restore.blend_enabled = glIsEnabled(GL_BLEND);
+    if (restore.blend_enabled) {
+        glGetIntegerv(GL_BLEND_SRC, &restore.blend_src);
+        glGetIntegerv(GL_BLEND_DST, &restore.blend_dst);
+        rlDisableColorBlend();
+    }
+
+    return restore;
+}
+
+static void dcRestoreBlend(DCBlendRestore restore) {
+    if (!restore.active || !restore.blend_enabled) return;
+
+    rlEnableColorBlend();
+    glBlendFunc(restore.blend_src, restore.blend_dst);
+}
+
 /* -------------------------------------------------------------------
  * Phase 2: Strip rendering via GLdc
  *
@@ -211,8 +245,8 @@ static int dcPatchEEligible(DCSubmesh* sm, Material material) {
  * genTriangleStrip() is trivial (one EOL flag), so this
  * avoids the per-triangle EOL overhead of GL_TRIANGLES.
  *
- * Phase 3 (Patch E): When eligible, we additionally minimize
- * state changes by batching all strips under one GL state context.
+ * Phase 3 (Patch E): When eligible, route the submesh to GLdc's opaque
+ * list by temporarily disabling blending, then restore caller blend state.
  * ---------------------------------------------------------------- */
 static void dcDrawSubmesh(DCSubmesh* sm, Material material, Matrix transform) {
     if (sm->vertex_count == 0 || sm->strip_count == 0) return;
@@ -232,6 +266,8 @@ static void dcDrawSubmesh(DCSubmesh* sm, Material material, Matrix transform) {
     GLDC_STAT_ADD(strip_count, sm->strip_count);
     GLDC_STAT_ADD(strip_vertices_total, sm->vertex_count);
 #endif
+
+    DCBlendRestore blend_restore = dcForceOpaqueBlendOff(use_patchE);
 
     /* Bind texture */
     unsigned int texId = material.maps[MATERIAL_MAP_DIFFUSE].texture.id;
@@ -278,6 +314,7 @@ static void dcDrawSubmesh(DCSubmesh* sm, Material material, Matrix transform) {
     glDisableClientState(GL_VERTEX_ARRAY);
 
     rlDisableTexture();
+    dcRestoreBlend(blend_restore);
 }
 
 /* -------------------------------------------------------------------

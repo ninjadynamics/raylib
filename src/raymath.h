@@ -812,10 +812,8 @@ RMAPI Vector3 Vector3Divide(Vector3 v1, Vector3 v2)
 RMAPI Vector3 Vector3Normalize(Vector3 v)
 {
 #ifdef USE_SH4ZAM
-    shz_vec3_t sv = { .x = v.x, .y = v.y, .z = v.z };
-    shz_vec3_t sn = shz_vec3_normalize_safe(sv);
-    Vector3 result = { sn.x, sn.y, sn.z };
-    return result;
+    shz_vec3_t sn = shz_vec3_normalize_safe(*(shz_vec3_t*)&v);
+    return *(Vector3*)&sn;
 #else
     Vector3 result = v;
 
@@ -906,8 +904,7 @@ RMAPI void Vector3OrthoNormalize(Vector3 *v1, Vector3 *v2)
 RMAPI Vector3 Vector3Transform(Vector3 v, Matrix mat)
 {
 #ifdef USE_SH4ZAM
-    shz_mat4x4_t sm = _rlShzFromMatrix(mat);
-    shz_xmtrx_load_4x4(&sm);
+    shz_xmtrx_load_4x4((const shz_mat4x4_t*)&mat);
     shz_vec4_t sv = { .x = v.x, .y = v.y, .z = v.z, .w = 1.0f };
     shz_vec4_t sr = shz_xmtrx_transform_vec4(sv);
     Vector3 result = { sr.x, sr.y, sr.z };
@@ -1695,11 +1692,9 @@ RMAPI Matrix MatrixSubtract(Matrix left, Matrix right)
 RMAPI Matrix MatrixMultiply(Matrix left, Matrix right)
 {
 #ifdef USE_SH4ZAM
-    shz_mat4x4_t sl = _rlShzFromMatrix(left);
-    shz_mat4x4_t sr = _rlShzFromMatrix(right);
     shz_mat4x4_t sm;
-    shz_mat4x4_mult(&sm, &sl, &sr);
-    return _rlShzToMatrix(sm);
+    shz_mat4x4_mult(&sm, (const shz_mat4x4_t*)&right, (const shz_mat4x4_t*)&left);
+    return *(Matrix*)&sm;
 #else
     Matrix result = { 0 };
 
@@ -1784,6 +1779,11 @@ RMAPI Matrix MatrixRotate(Vector3 axis, float angle)
 // NOTE: Angle must be provided in radians
 RMAPI Matrix MatrixRotateX(float angle)
 {
+#ifdef USE_SH4ZAM
+    shz_mat4x4_t sm;
+    shz_mat4x4_init_rotation_x(&sm, -angle);
+    return *(Matrix*)&sm;
+#else
     Matrix result = { 1.0f, 0.0f, 0.0f, 0.0f,
                       0.0f, 1.0f, 0.0f, 0.0f,
                       0.0f, 0.0f, 1.0f, 0.0f,
@@ -1798,12 +1798,18 @@ RMAPI Matrix MatrixRotateX(float angle)
     result.m10 = cosres;
 
     return result;
+#endif
 }
 
 // Get y-rotation matrix
 // NOTE: Angle must be provided in radians
 RMAPI Matrix MatrixRotateY(float angle)
 {
+#ifdef USE_SH4ZAM
+    shz_mat4x4_t sm;
+    shz_mat4x4_init_rotation_y(&sm, -angle);
+    return *(Matrix*)&sm;
+#else
     Matrix result = { 1.0f, 0.0f, 0.0f, 0.0f,
                       0.0f, 1.0f, 0.0f, 0.0f,
                       0.0f, 0.0f, 1.0f, 0.0f,
@@ -1818,12 +1824,18 @@ RMAPI Matrix MatrixRotateY(float angle)
     result.m10 = cosres;
 
     return result;
+#endif
 }
 
 // Get z-rotation matrix
 // NOTE: Angle must be provided in radians
 RMAPI Matrix MatrixRotateZ(float angle)
 {
+#ifdef USE_SH4ZAM
+    shz_mat4x4_t sm;
+    shz_mat4x4_init_rotation_z(&sm, -angle);
+    return *(Matrix*)&sm;
+#else
     Matrix result = { 1.0f, 0.0f, 0.0f, 0.0f,
                       0.0f, 1.0f, 0.0f, 0.0f,
                       0.0f, 0.0f, 1.0f, 0.0f,
@@ -1838,6 +1850,7 @@ RMAPI Matrix MatrixRotateZ(float angle)
     result.m5 = cosres;
 
     return result;
+#endif
 }
 
 
@@ -2143,11 +2156,9 @@ RMAPI float QuaternionLength(Quaternion q)
 RMAPI Quaternion QuaternionNormalize(Quaternion q)
 {
 #ifdef USE_SH4ZAM
-    shz_quat_t sq = _rlShzFromQuat(q);
-    shz_vec4_t sv = *(shz_vec4_t*)&sq;
+    shz_vec4_t sv = *(shz_vec4_t*)&q;
     shz_vec4_t sn = shz_vec4_normalize(sv);
-    shz_quat_t nr = *(shz_quat_t*)&sn;
-    return _rlShzToQuat(nr);
+    return *(Quaternion*)&sn;
 #else
     Quaternion result = { 0 };
 

@@ -5,7 +5,7 @@
  * Drop this file into your raylib src/ directory.
  *
  * Compile with -DPLATFORM_DREAMCAST (already set by DC build).
- * Optional: -DENABLE_PATCH_E=1 to enable direct PVR submission.
+ * Optional: -DENABLE_PATCH_E=1 to enable opaque-list routing.
  * Optional: -DENABLE_STRIPS=1 to enable strip rendering via GLdc.
  *
  * Both default to 1 when PLATFORM_DREAMCAST is defined.
