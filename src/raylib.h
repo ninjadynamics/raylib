@@ -236,7 +236,11 @@ typedef struct Vector4 {
 typedef Vector4 Quaternion;
 
 // Matrix, 4x4 components, column major, OpenGL style, right-handed
-typedef struct Matrix {
+typedef struct
+#if defined(__SH4__) || defined(__SH4_SINGLE_ONLY__)
+__attribute__((aligned(8)))
+#endif
+Matrix {
     float m0, m4, m8, m12;  // Matrix first row (4 components)
     float m1, m5, m9, m13;  // Matrix second row (4 components)
     float m2, m6, m10, m14; // Matrix third row (4 components)
