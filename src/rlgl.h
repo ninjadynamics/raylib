@@ -858,6 +858,9 @@ RLAPI void rlLoadDrawQuad(void);     // Load and draw a quad
         #endif
 
         #include <GL/gl.h>              // OpenGL 1.1 library
+        #if defined(PLATFORM_DREAMCAST)
+            #include <GL/glext.h>       // GLdc: glGenerateMipmap() and friends
+        #endif
     #endif
 #endif
 
@@ -3867,6 +3870,20 @@ void rlGenTextureMipmaps(unsigned int id, int width, int height, int format, int
         TRACELOG(RL_LOG_INFO, "TEXTURE: [ID %i] Mipmaps generated automatically, total: %i", id, *mipmaps);
     }
     else TRACELOG(RL_LOG_WARNING, "TEXTURE: [ID %i] Failed to generate mipmaps", id);
+
+    glBindTexture(GL_TEXTURE_2D, 0);
+#elif defined(PLATFORM_DREAMCAST)
+    // GLdc builds a twiddled mip chain in VRAM, but only for square POT textures.
+    glBindTexture(GL_TEXTURE_2D, id);
+
+    bool texIsSquarePOT = (width == height) && (width > 0) && ((width & (width - 1)) == 0);
+    if (texIsSquarePOT)
+    {
+        glGenerateMipmap(GL_TEXTURE_2D);                            // GLdc: GL/glext.h
+        *mipmaps = 1 + (int)floor(log((double)width)/log(2.0));
+        TRACELOG(RL_LOG_INFO, "TEXTURE: [ID %i] Mipmaps generated (DC/GLdc), total: %i", id, *mipmaps);
+    }
+    else TRACELOG(RL_LOG_WARNING, "TEXTURE: [ID %i] DC mipmaps require a square power-of-two texture", id);
 
     glBindTexture(GL_TEXTURE_2D, 0);
 #else
