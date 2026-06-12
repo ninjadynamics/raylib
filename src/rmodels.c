@@ -1321,6 +1321,13 @@ void UploadMesh(Mesh *mesh, bool dynamic)
         return;
     }
 
+    // Re-upload guard: on backends without VAOs/VBOs (GLdc / GL 1.x) vaoId stays
+    // 0, so the check above never catches a re-upload of a runtime mesh. Without
+    // freeing the previous array, each call leaks MAX_MESH_VERTEX_BUFFERS ints.
+    // The entries are real GL buffer ids only on GL33/ES2, and those return at
+    // the vaoId>0 guard before reaching here, so freeing the array alone is safe.
+    if (mesh->vboId != NULL) RL_FREE(mesh->vboId);
+
     mesh->vboId = (unsigned int *)RL_CALLOC(MAX_MESH_VERTEX_BUFFERS, sizeof(unsigned int));
 
     mesh->vaoId = 0;        // Vertex Array Object
