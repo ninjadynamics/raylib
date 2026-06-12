@@ -904,7 +904,12 @@ RMAPI void Vector3OrthoNormalize(Vector3 *v1, Vector3 *v2)
 RMAPI Vector3 Vector3Transform(Vector3 v, Matrix mat)
 {
 #ifdef USE_SH4ZAM
-    shz_xmtrx_load_4x4((const shz_mat4x4_t*)&mat);
+    // `mat` is a by-value parameter, which the SH4 ABI places at 4-byte
+    // alignment - the plain fmov.d loader (shz_xmtrx_load_4x4) faults on real
+    // hardware when the address isn't 8-aligned. The unaligned loader checks
+    // the address at runtime and uses the fmov.s path when needed. Same float
+    // order as the raw (shz_mat4x4_t*) cast, so the math is unchanged.
+    shz_xmtrx_load_unaligned_4x4((const float*)&mat);
     shz_vec4_t sv = { .x = v.x, .y = v.y, .z = v.z, .w = 1.0f };
     shz_vec4_t sr = shz_xmtrx_transform_vec4(sv);
     Vector3 result = { sr.x, sr.y, sr.z };
@@ -1692,9 +1697,15 @@ RMAPI Matrix MatrixSubtract(Matrix left, Matrix right)
 RMAPI Matrix MatrixMultiply(Matrix left, Matrix right)
 {
 #ifdef USE_SH4ZAM
-    shz_mat4x4_t sm;
-    shz_mat4x4_mult(&sm, (const shz_mat4x4_t*)&right, (const shz_mat4x4_t*)&left);
-    return *(Matrix*)&sm;
+    // Unaligned load/apply/store: the by-value params are only 4-byte aligned
+    // (SH4 ABI), so the fmov.d path faults on hardware (see Vector3Transform).
+    // shz_mat4x4_mult(&sm, &right, &left) == load(right) apply(left); reproduce
+    // that exact order through the runtime-alignment-checked path.
+    Matrix result;
+    shz_xmtrx_load_apply_store_unaligned_4x4((float*)&result,
+                                             (const float*)&right,
+                                             (const float*)&left);
+    return result;
 #else
     Matrix result = { 0 };
 
