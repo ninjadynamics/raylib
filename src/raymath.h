@@ -1759,8 +1759,14 @@ RMAPI Matrix MatrixRotate(Vector3 axis, float angle)
         z *= ilength;
     }
 
+#ifdef USE_SH4ZAM
+    shz_sincos_t sc = shz_sincosf(angle);
+    float sinres = sc.sin;
+    float cosres = sc.cos;
+#else
     float sinres = sinf(angle);
     float cosres = cosf(angle);
+#endif
     float t = 1.0f - cosres;
 
     result.m0 = x*x*t + cosres;
@@ -1874,12 +1880,21 @@ RMAPI Matrix MatrixRotateXYZ(Vector3 angle)
                       0.0f, 0.0f, 1.0f, 0.0f,
                       0.0f, 0.0f, 0.0f, 1.0f }; // MatrixIdentity()
 
+#ifdef USE_SH4ZAM
+    shz_sincos_t scz = shz_sincosf(-angle.z);
+    shz_sincos_t scy = shz_sincosf(-angle.y);
+    shz_sincos_t scx = shz_sincosf(-angle.x);
+    float cosz = scz.cos, sinz = scz.sin;
+    float cosy = scy.cos, siny = scy.sin;
+    float cosx = scx.cos, sinx = scx.sin;
+#else
     float cosz = cosf(-angle.z);
     float sinz = sinf(-angle.z);
     float cosy = cosf(-angle.y);
     float siny = sinf(-angle.y);
     float cosx = cosf(-angle.x);
     float sinx = sinf(-angle.x);
+#endif
 
     result.m0 = cosz*cosy;
     result.m1 = (cosz*siny*sinx) - (sinz*cosx);
@@ -1902,12 +1917,21 @@ RMAPI Matrix MatrixRotateZYX(Vector3 angle)
 {
     Matrix result = { 0 };
 
+#ifdef USE_SH4ZAM
+    shz_sincos_t scz = shz_sincosf(angle.z);
+    shz_sincos_t scy = shz_sincosf(angle.y);
+    shz_sincos_t scx = shz_sincosf(angle.x);
+    float cz = scz.cos, sz = scz.sin;
+    float cy = scy.cos, sy = scy.sin;
+    float cx = scx.cos, sx = scx.sin;
+#else
     float cz = cosf(angle.z);
     float sz = sinf(angle.z);
     float cy = cosf(angle.y);
     float sy = sinf(angle.y);
     float cx = cosf(angle.x);
     float sx = sinf(angle.x);
+#endif
 
     result.m0 = cz*cy;
     result.m4 = cz*sy*sx - cx*sz;
@@ -2501,8 +2525,14 @@ RMAPI Quaternion QuaternionFromAxisAngle(Vector3 axis, float angle)
         axis.y *= ilength;
         axis.z *= ilength;
 
+#ifdef USE_SH4ZAM
+        shz_sincos_t sc = shz_sincosf(angle);
+        float sinres = sc.sin;
+        float cosres = sc.cos;
+#else
         float sinres = sinf(angle);
         float cosres = cosf(angle);
+#endif
 
         result.x = axis.x*sinres;
         result.y = axis.y*sinres;
@@ -2566,12 +2596,21 @@ RMAPI Quaternion QuaternionFromEuler(float pitch, float yaw, float roll)
 {
     Quaternion result = { 0 };
 
+#ifdef USE_SH4ZAM
+    shz_sincos_t scx = shz_sincosf(pitch*0.5f);
+    shz_sincos_t scy = shz_sincosf(yaw*0.5f);
+    shz_sincos_t scz = shz_sincosf(roll*0.5f);
+    float x0 = scx.cos, x1 = scx.sin;
+    float y0 = scy.cos, y1 = scy.sin;
+    float z0 = scz.cos, z1 = scz.sin;
+#else
     float x0 = cosf(pitch*0.5f);
     float x1 = sinf(pitch*0.5f);
     float y0 = cosf(yaw*0.5f);
     float y1 = sinf(yaw*0.5f);
     float z0 = cosf(roll*0.5f);
     float z1 = sinf(roll*0.5f);
+#endif
 
     result.x = x1*y0*z0 - x0*y1*z1;
     result.y = x0*y1*z0 + x1*y0*z1;
