@@ -54,6 +54,14 @@ int dcMeshLoadSidecar(Model *model, const char *modelPath);
  * on Dreamcast — called from the transparent routing hook. */
 void dcMeshDraw(Mesh mesh, Material material, Matrix transform);
 
+/* Explicit batch path for many instances of one dcmesh-backed material.
+ * Begin binds texture/client arrays once, each Draw submits one triangle array
+ * with its own transform/tint, and End tears state down. Returns 1 if the
+ * model/material has dcmesh strip data and the batch was opened. */
+int dcMeshBatchBegin(Model model, int materialIndex);
+void dcMeshBatchDraw(Matrix transform, Color tint);
+void dcMeshBatchEnd(void);
+
 /* Unload all DCMesh data associated with a model.
  * Call this before UnloadModel(). */
 void dcMeshUnloadModel(Model *model);

@@ -31,6 +31,20 @@
 static DCMeshData* dc_registry[DC_MESH_REGISTRY_MAX] = {0};
 static int dc_registry_count = 0;
 
+#define DC_MESH_BATCH_CACHE_MAX 64
+
+typedef struct {
+    DCMeshData *data;
+    int submesh_index;
+    DCVertex *vertices;
+    uint32_t vertex_count;
+    uint32_t *tint_colors;
+} DCMeshBatchCache;
+
+static DCMeshBatchCache dc_batch_caches[DC_MESH_BATCH_CACHE_MAX] = {0};
+
+static void dcBatchFreeCachesForData(DCMeshData *data);
+
 static int dcRegistryAdd(DCMeshData* data) {
     if (dc_registry_count >= DC_MESH_REGISTRY_MAX) {
         printf("[DCMesh] Registry full (%d max)\n", DC_MESH_REGISTRY_MAX);
@@ -133,6 +147,7 @@ fail:
 
 static void dcFreeData(DCMeshData* data) {
     if (!data) return;
+    dcBatchFreeCachesForData(data);
     for (uint32_t i = 0; i < data->submesh_count; i++) {
         free(data->submeshes[i].vertices);
         free(data->submeshes[i].strips);
@@ -235,6 +250,208 @@ static void dcRestoreBlend(DCBlendRestore restore) {
 
     rlEnableColorBlend();
     glBlendFunc(restore.blend_src, restore.blend_dst);
+}
+
+typedef struct {
+    int active;
+    DCMeshBatchCache *cache;
+    DCBlendRestore blend_restore;
+    int using_base_colors;
+} DCMeshBatchContext;
+
+static DCMeshBatchContext dc_batch = {0};
+
+static void dcBatchFreeCache(DCMeshBatchCache *cache) {
+    if (!cache) return;
+    free(cache->vertices);
+    free(cache->tint_colors);
+    *cache = (DCMeshBatchCache){0};
+}
+
+static void dcBatchFreeCachesForData(DCMeshData *data) {
+    for (int i = 0; i < DC_MESH_BATCH_CACHE_MAX; i++) {
+        if (dc_batch_caches[i].data == data) {
+            if (dc_batch.active && dc_batch.cache == &dc_batch_caches[i])
+                dcMeshBatchEnd();
+            else if (dc_batch.cache == &dc_batch_caches[i])
+                dc_batch = (DCMeshBatchContext){0};
+            dcBatchFreeCache(&dc_batch_caches[i]);
+        }
+    }
+}
+
+static uint32_t dcBatchTriangleVertexCount(const DCSubmesh *sm) {
+    uint32_t count = 0;
+    for (uint32_t i = 0; i < sm->strip_count; i++) {
+        if (sm->strips[i].vertex_count >= 3)
+            count += (sm->strips[i].vertex_count - 2) * 3;
+    }
+    return count;
+}
+
+static int dcBatchBuildCache(DCMeshBatchCache *cache, DCMeshData *data, int submesh_index) {
+    DCSubmesh *sm = &data->submeshes[submesh_index];
+    uint32_t vertex_count = dcBatchTriangleVertexCount(sm);
+    if (vertex_count == 0) return 0;
+
+    DCVertex *vertices = (DCVertex *)malloc(vertex_count * sizeof(DCVertex));
+    uint32_t *colors = (uint32_t *)malloc(vertex_count * sizeof(uint32_t));
+    if (!vertices || !colors) {
+        free(vertices);
+        free(colors);
+        return 0;
+    }
+
+    uint32_t out = 0;
+    for (uint32_t s = 0; s < sm->strip_count; s++) {
+        const DCStrip *strip = &sm->strips[s];
+        for (uint32_t j = 2; j < strip->vertex_count; j++) {
+            uint32_t a = strip->first_vertex + j - 2;
+            uint32_t b = strip->first_vertex + j - 1;
+            uint32_t c = strip->first_vertex + j;
+
+            if (((j - 2) & 1) != 0) {
+                uint32_t t = a;
+                a = b;
+                b = t;
+            }
+
+            vertices[out++] = sm->vertices[a];
+            vertices[out++] = sm->vertices[b];
+            vertices[out++] = sm->vertices[c];
+        }
+    }
+
+    cache->data = data;
+    cache->submesh_index = submesh_index;
+    cache->vertices = vertices;
+    cache->vertex_count = vertex_count;
+    cache->tint_colors = colors;
+    return 1;
+}
+
+static DCMeshBatchCache *dcBatchGetCache(DCMeshData *data, int submesh_index) {
+    DCMeshBatchCache *empty = NULL;
+
+    for (int i = 0; i < DC_MESH_BATCH_CACHE_MAX; i++) {
+        DCMeshBatchCache *cache = &dc_batch_caches[i];
+        if (cache->data == data && cache->submesh_index == submesh_index)
+            return cache;
+        if (!cache->data && !empty)
+            empty = cache;
+    }
+
+    if (!empty) return NULL;
+    if (!dcBatchBuildCache(empty, data, submesh_index)) return NULL;
+    return empty;
+}
+
+static void dcBatchFillTintColors(DCMeshBatchCache *cache, Color tint) {
+    for (uint32_t i = 0; i < cache->vertex_count; i++) {
+        const unsigned char *src = (const unsigned char *)&cache->vertices[i].color;
+        unsigned char *dst = (unsigned char *)&cache->tint_colors[i];
+        dst[0] = (unsigned char)(((unsigned int)src[0] * tint.b) / 255);
+        dst[1] = (unsigned char)(((unsigned int)src[1] * tint.g) / 255);
+        dst[2] = (unsigned char)(((unsigned int)src[2] * tint.r) / 255);
+        dst[3] = (unsigned char)(((unsigned int)src[3] * tint.a) / 255);
+    }
+}
+
+/* -------------------------------------------------------------------
+ * Public API: Explicit one-setup batch draw for repeated instances
+ * ---------------------------------------------------------------- */
+int dcMeshBatchBegin(Model model, int materialIndex) {
+    if (dc_batch.active) dcMeshBatchEnd();
+    if (materialIndex < 0 || materialIndex >= model.materialCount) return 0;
+    if (!model.meshes || !model.materials) return 0;
+
+    DCMeshData *data = NULL;
+    int submesh_index = -1;
+
+    for (int i = 0; i < model.meshCount; i++) {
+        int mesh_material = model.meshMaterial ? model.meshMaterial[i] : 0;
+        if (mesh_material != materialIndex) continue;
+
+        data = dcRegistryGet(model.meshes[i].vaoId);
+        if (!data) continue;
+
+        submesh_index = DCMESH_SUBMESH_INDEX(model.meshes[i].vaoId);
+        if (submesh_index >= 0 && submesh_index < (int)data->submesh_count)
+            break;
+
+        data = NULL;
+        submesh_index = -1;
+    }
+
+    if (!data || submesh_index < 0) return 0;
+
+    DCMeshBatchCache *cache = dcBatchGetCache(data, submesh_index);
+    if (!cache || !cache->vertices || cache->vertex_count == 0) return 0;
+
+    Material material = model.materials[materialIndex];
+    DCSubmesh *sm = &data->submeshes[submesh_index];
+
+#if ENABLE_PATCH_E
+    int use_patchE = dcPatchEEligible(sm, material);
+#else
+    int use_patchE = 0;
+#endif
+
+    dc_batch.blend_restore = dcForceOpaqueBlendOff(use_patchE);
+    dc_batch.cache = cache;
+    dc_batch.active = 1;
+    dc_batch.using_base_colors = 1;
+
+    const GLsizei stride = sizeof(DCVertex);
+    const DCVertex *buf = cache->vertices;
+
+    rlEnableTexture(material.maps[MATERIAL_MAP_DIFFUSE].texture.id);
+
+    glEnableClientState(GL_VERTEX_ARRAY);
+    glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+    glEnableClientState(GL_COLOR_ARRAY);
+    glDisableClientState(GL_NORMAL_ARRAY);
+
+    glVertexPointer(3, GL_FLOAT, stride, &buf[0].x);
+    glTexCoordPointer(2, GL_FLOAT, stride, &buf[0].u);
+    glColorPointer(GL_BGRA, GL_UNSIGNED_BYTE, stride, &buf[0].color);
+
+    return 1;
+}
+
+void dcMeshBatchDraw(Matrix transform, Color tint) {
+    if (!dc_batch.active || !dc_batch.cache) return;
+
+    DCMeshBatchCache *cache = dc_batch.cache;
+    const GLsizei stride = sizeof(DCVertex);
+    const DCVertex *buf = cache->vertices;
+    int needs_tint = tint.r != 255 || tint.g != 255 || tint.b != 255 || tint.a != 255;
+
+    if (needs_tint) {
+        dcBatchFillTintColors(cache, tint);
+        glColorPointer(GL_BGRA, GL_UNSIGNED_BYTE, 0, cache->tint_colors);
+        dc_batch.using_base_colors = 0;
+    } else if (!dc_batch.using_base_colors) {
+        glColorPointer(GL_BGRA, GL_UNSIGNED_BYTE, stride, &buf[0].color);
+        dc_batch.using_base_colors = 1;
+    }
+
+    rlPushMatrix();
+    rlMultMatrixf(MatrixToFloat(transform));
+    glDrawArrays(GL_TRIANGLES, 0, cache->vertex_count);
+    rlPopMatrix();
+}
+
+void dcMeshBatchEnd(void) {
+    if (!dc_batch.active) return;
+
+    glDisableClientState(GL_COLOR_ARRAY);
+    glDisableClientState(GL_TEXTURE_COORD_ARRAY);
+    glDisableClientState(GL_VERTEX_ARRAY);
+
+    rlDisableTexture();
+    dcRestoreBlend(dc_batch.blend_restore);
+    dc_batch = (DCMeshBatchContext){0};
 }
 
 /* -------------------------------------------------------------------
@@ -434,6 +651,8 @@ static void dcMeshSyncFromRaylib(Mesh *mesh) {
                                     ((uint32_t)r << 0);   // was b
         }
     }
+
+    dcBatchFreeCachesForData(data);
 }
 
 /* -------------------------------------------------------------------
@@ -473,6 +692,8 @@ void dcMeshRecenterGeometry(Model *model, float offsetX, float offsetY, float of
             sm->vertices[v].y -= offsetY;
             sm->vertices[v].z -= offsetZ;
         }
+
+        dcBatchFreeCachesForData(data);
     }
 }
 
