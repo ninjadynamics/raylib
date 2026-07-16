@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <GL/gl.h>
+#include <GL/glkos.h>   /* glKosDrawMultiStrips (one-call model submission) */
 
 #include "dc_mesh.h"
 #include "raylib.h"
@@ -39,6 +40,8 @@ typedef struct {
     DCVertex *vertices;
     uint32_t vertex_count;
     uint32_t *tint_colors;
+    uint32_t last_tint;
+    int tint_valid;
 } DCMeshBatchCache;
 
 static DCMeshBatchCache dc_batch_caches[DC_MESH_BATCH_CACHE_MAX] = {0};
@@ -327,6 +330,7 @@ static int dcBatchBuildCache(DCMeshBatchCache *cache, DCMeshData *data, int subm
     cache->vertices = vertices;
     cache->vertex_count = vertex_count;
     cache->tint_colors = colors;
+    cache->tint_valid = 0;
     return 1;
 }
 
@@ -347,6 +351,14 @@ static DCMeshBatchCache *dcBatchGetCache(DCMeshData *data, int submesh_index) {
 }
 
 static void dcBatchFillTintColors(DCMeshBatchCache *cache, Color tint) {
+    /* Per-instance draws re-tint the whole buffer even when the tint repeats
+       (enemy formations share shades): skip when unchanged since the last
+       fill. Invalidated by color syncs and cache rebuilds. */
+    uint32_t packed = ((uint32_t)tint.r << 24) | ((uint32_t)tint.g << 16) |
+                      ((uint32_t)tint.b << 8) | (uint32_t)tint.a;
+    if (cache->tint_valid && cache->last_tint == packed) return;
+    cache->last_tint = packed;
+    cache->tint_valid = 1;
     for (uint32_t i = 0; i < cache->vertex_count; i++) {
         const unsigned char *src = (const unsigned char *)&cache->vertices[i].color;
         unsigned char *dst = (unsigned char *)&cache->tint_colors[i];
@@ -438,7 +450,10 @@ void dcMeshBatchDraw(Matrix transform, Color tint) {
 
     rlPushMatrix();
     rlMultMatrixf(MatrixToFloat(transform));
-    glDrawArrays(GL_TRIANGLES, 0, cache->vertex_count);
+    /* Fused-lane submission (2026-07-15): the GL_TRIANGLES call rode GLdc's
+     * generic generator (the interleaved/BGRA layout misses the PUC dispatch).
+     * Same records, PUC-grade writer. */
+    glKosDrawTrianglesArrays(0, (GLsizei)cache->vertex_count);
     rlPopMatrix();
 }
 
@@ -514,13 +529,25 @@ static void dcDrawSubmesh(DCSubmesh* sm, Material material, Matrix transform) {
                material.maps[MATERIAL_MAP_DIFFUSE].color.b,
                material.maps[MATERIAL_MAP_DIFFUSE].color.a);
 
-    /* Submit all strips — each as GL_TRIANGLE_STRIP.
-     * GLdc's genTriangleStrip() is just one EOL flag assignment,
-     * so this is extremely efficient per strip. With Patch E eligibility,
-     * all strips share the same GL state (no header rebuilds between strips). */
-    for (uint32_t i = 0; i < sm->strip_count; i++) {
-        DCStrip* strip = &sm->strips[i];
-        glDrawArrays(GL_TRIANGLE_STRIP, strip->first_vertex, strip->vertex_count);
+    /* Submit all strips in ONE GLdc call (glKosDrawMultiStrips): the old
+     * per-strip glDrawArrays loop paid list bookkeeping + a full XMTRX MVP
+     * concat per strip (F22: 192 strips/frame) and routed through GLdc's
+     * generic generator. Chunked to bound the stack arrays. */
+    {
+        enum { DC_STRIP_CHUNK = 64 };
+        GLint   firsts[DC_STRIP_CHUNK];
+        GLsizei counts[DC_STRIP_CHUNK];
+        uint32_t si = 0;
+        while (si < sm->strip_count) {
+            GLsizei nchunk = 0;
+            while (si < sm->strip_count && nchunk < DC_STRIP_CHUNK) {
+                firsts[nchunk] = (GLint)sm->strips[si].first_vertex;
+                counts[nchunk] = (GLsizei)sm->strips[si].vertex_count;
+                ++nchunk;
+                ++si;
+            }
+            glKosDrawMultiStrips(firsts, counts, nchunk);
+        }
     }
 
     rlPopMatrix();
@@ -653,6 +680,63 @@ static void dcMeshSyncFromRaylib(Mesh *mesh) {
     }
 
     dcBatchFreeCachesForData(data);
+}
+
+/* -------------------------------------------------------------------
+ * Public API: colors-only sync (2026-07-15, [PROF][DC] ply=2.84ms hunt)
+ *
+ * The per-frame CPU lighting path only rewrites mesh->colors; the old route
+ * (UploadMesh -> dcMeshSyncFromRaylib) also re-scattered UNCHANGED positions,
+ * and freed any batch caches for the data. For the normal player draw
+ * (dcDrawSubmesh, no batch cache) this is a positions-scatter reduction
+ * (~0.3ms measured); for batch users it additionally keeps the cache alive
+ * by patching its colors in place (same expansion walk as dcBatchBuildCache).
+ * ---------------------------------------------------------------- */
+void dcMeshSyncColors(Mesh *mesh) {
+    if (!mesh || !DCMESH_IS_REGISTRY_ID(mesh->vaoId) || !mesh->colors) return;
+
+    DCMeshData *data = dcRegistryGet(mesh->vaoId);
+    if (!data) return;
+
+    int sub_idx = DCMESH_SUBMESH_INDEX(mesh->vaoId);
+    if (sub_idx < 0 || sub_idx >= (int)data->submesh_count) return;
+
+    DCSubmesh *sm = &data->submeshes[sub_idx];
+    if (!sm->vertex_map) return;
+
+    const int rl_vc = mesh->vertexCount;
+    const unsigned char *cols = mesh->colors;
+
+    for (uint32_t v = 0; v < sm->vertex_count; v++) {
+        int si = sm->vertex_map[v];
+        if (si >= rl_vc) si = si % rl_vc;
+        /* same RGBA->BGRA packing as dcMeshSyncFromRaylib (incl. its swap note) */
+        sm->vertices[v].color = ((uint32_t)cols[si * 4 + 3] << 24) |
+                                ((uint32_t)cols[si * 4 + 2] << 16) |
+                                ((uint32_t)cols[si * 4 + 1] << 8)  |
+                                ((uint32_t)cols[si * 4 + 0] << 0);
+    }
+
+    /* Patch the live triangle-expanded cache(s): same walk as dcBatchBuildCache,
+       colors only. No frees, no mallocs, no re-expansion. */
+    for (int ci = 0; ci < DC_MESH_BATCH_CACHE_MAX; ci++) {
+        DCMeshBatchCache *cache = &dc_batch_caches[ci];
+        if (cache->data != data || cache->submesh_index != sub_idx || !cache->vertices) continue;
+        uint32_t out = 0;
+        for (uint32_t s = 0; s < sm->strip_count; s++) {
+            const DCStrip *strip = &sm->strips[s];
+            for (uint32_t j = 2; j < strip->vertex_count; j++) {
+                uint32_t a = strip->first_vertex + j - 2;
+                uint32_t b = strip->first_vertex + j - 1;
+                uint32_t c = strip->first_vertex + j;
+                if (((j - 2) & 1) != 0) { uint32_t t = a; a = b; b = t; }
+                cache->vertices[out++].color = sm->vertices[a].color;
+                cache->vertices[out++].color = sm->vertices[b].color;
+                cache->vertices[out++].color = sm->vertices[c].color;
+            }
+        }
+        cache->tint_valid = 0;   /* base colors changed: stale tint buffer */
+    }
 }
 
 /* -------------------------------------------------------------------

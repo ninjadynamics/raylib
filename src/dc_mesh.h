@@ -75,6 +75,7 @@ int dcMeshHasStripData(Mesh mesh);
  * Game code should NOT call this directly — it's called from the
  * UploadMesh hook in rmodels.c automatically. */
 int dcMeshHandleUpload(Mesh *mesh, bool dynamic);
+void dcMeshSyncColors(Mesh *mesh);   /* colors-only per-frame sync: no cache rebuild */
 
 /* Print DCMesh registry stats (for debugging). */
 void dcMeshPrintRegistryStats(void);
