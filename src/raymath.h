@@ -812,8 +812,12 @@ RMAPI Vector3 Vector3Divide(Vector3 v1, Vector3 v2)
 RMAPI Vector3 Vector3Normalize(Vector3 v)
 {
 #ifdef USE_SH4ZAM
-    shz_vec3_t sn = shz_vec3_normalize_safe(*(shz_vec3_t*)&v);
-    return *(Vector3*)&sn;
+    // Union bit-cast preserves the zero-copy layout path without violating
+    // strict aliasing (USE_SH4ZAM is compiled as GNU C, never C++).
+    union { Vector3 raylib; shz_vec3_t sh4zam; } bits;
+    bits.raylib = v;
+    bits.sh4zam = shz_vec3_normalize_safe(bits.sh4zam);
+    return bits.raylib;
 #else
     Vector3 result = v;
 
@@ -1797,9 +1801,9 @@ RMAPI Matrix MatrixRotate(Vector3 axis, float angle)
 RMAPI Matrix MatrixRotateX(float angle)
 {
 #ifdef USE_SH4ZAM
-    shz_mat4x4_t sm;
-    shz_mat4x4_init_rotation_x(&sm, -angle);
-    return *(Matrix*)&sm;
+    union { shz_mat4x4_t sh4zam; Matrix raylib; } bits;
+    shz_mat4x4_init_rotation_x(&bits.sh4zam, -angle);
+    return bits.raylib;
 #else
     Matrix result = { 1.0f, 0.0f, 0.0f, 0.0f,
                       0.0f, 1.0f, 0.0f, 0.0f,
@@ -1823,9 +1827,9 @@ RMAPI Matrix MatrixRotateX(float angle)
 RMAPI Matrix MatrixRotateY(float angle)
 {
 #ifdef USE_SH4ZAM
-    shz_mat4x4_t sm;
-    shz_mat4x4_init_rotation_y(&sm, -angle);
-    return *(Matrix*)&sm;
+    union { shz_mat4x4_t sh4zam; Matrix raylib; } bits;
+    shz_mat4x4_init_rotation_y(&bits.sh4zam, -angle);
+    return bits.raylib;
 #else
     Matrix result = { 1.0f, 0.0f, 0.0f, 0.0f,
                       0.0f, 1.0f, 0.0f, 0.0f,
@@ -1849,9 +1853,9 @@ RMAPI Matrix MatrixRotateY(float angle)
 RMAPI Matrix MatrixRotateZ(float angle)
 {
 #ifdef USE_SH4ZAM
-    shz_mat4x4_t sm;
-    shz_mat4x4_init_rotation_z(&sm, -angle);
-    return *(Matrix*)&sm;
+    union { shz_mat4x4_t sh4zam; Matrix raylib; } bits;
+    shz_mat4x4_init_rotation_z(&bits.sh4zam, -angle);
+    return bits.raylib;
 #else
     Matrix result = { 1.0f, 0.0f, 0.0f, 0.0f,
                       0.0f, 1.0f, 0.0f, 0.0f,
@@ -2191,9 +2195,10 @@ RMAPI float QuaternionLength(Quaternion q)
 RMAPI Quaternion QuaternionNormalize(Quaternion q)
 {
 #ifdef USE_SH4ZAM
-    shz_vec4_t sv = *(shz_vec4_t*)&q;
-    shz_vec4_t sn = shz_vec4_normalize(sv);
-    return *(Quaternion*)&sn;
+    union { Quaternion raylib; shz_vec4_t sh4zam; } bits;
+    bits.raylib = q;
+    bits.sh4zam = shz_vec4_normalize(bits.sh4zam);
+    return bits.raylib;
 #else
     Quaternion result = { 0 };
 
