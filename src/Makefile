@@ -766,7 +766,11 @@ endif
 USE_SH4ZAM ?= 0
 
 ifeq ($(USE_SH4ZAM),1)
-    CFLAGS += -DUSE_SH4ZAM
+    # RAYMATH_STATIC_INLINE: raymath's plain `inline` functions calling
+    # sh4zam's static inline helpers is a C11 constraint violation GCC
+    # warns about; making raymath static inline (as sh4ninja already does)
+    # silences it with identical codegen.
+    CFLAGS += -DUSE_SH4ZAM -DRAYMATH_STATIC_INLINE
     LDLIBS += -lsh4zam
 endif
 

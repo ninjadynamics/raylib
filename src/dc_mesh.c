@@ -92,7 +92,7 @@ static DCMeshData* dcLoadFile(const char* path) {
 
     if (fhdr.magic != DCMESH_MAGIC || fhdr.version != DCMESH_VERSION) {
         printf("[DCMesh] Invalid file: %s (magic=0x%X ver=%u)\n",
-               path, fhdr.magic, fhdr.version);
+               path, (unsigned)fhdr.magic, (unsigned)fhdr.version);
         fclose(f);
         return NULL;
     }
@@ -131,7 +131,8 @@ static DCMeshData* dcLoadFile(const char* path) {
 
     fclose(f);
     printf("[DCMesh] Loaded: %s (%u submeshes, %u verts, %u strips)\n",
-           path, fhdr.submesh_count, fhdr.total_vertices, fhdr.total_strips);
+           path, (unsigned)fhdr.submesh_count, (unsigned)fhdr.total_vertices,
+           (unsigned)fhdr.total_strips);
     return data;
 
 fail:
@@ -199,7 +200,7 @@ int dcMeshLoadSidecar(Model *model, const char *modelPath) {
     }
 
     printf("[DCMesh] Linked %d/%d meshes to registry[%d] (%u submeshes)\n",
-           linked, model->meshCount, reg_idx, data->submesh_count);
+           linked, model->meshCount, reg_idx, (unsigned)data->submesh_count);
     return 1;
 }
 
@@ -620,7 +621,8 @@ void dcMeshPrintRegistryStats(void) {
                 total_s += d->submeshes[j].strip_count;
             }
             printf("  [%d] %u submeshes, %u vertices, %u strips\n",
-                   i, d->submesh_count, total_v, total_s);
+                   i, (unsigned)d->submesh_count, (unsigned)total_v,
+                   (unsigned)total_s);
         }
     }
 }

@@ -5382,17 +5382,15 @@ int GetPixelDataSize(int width, int height, int format)
 // REF: https://stackoverflow.com/questions/1659440/32-bit-to-16-bit-floating-point-conversion/60047308#60047308
 static float HalfToFloat(unsigned short x)
 {
-    float result = 0.0f;
+    union { float f; unsigned int u; } fm, result;   // union puns: pointer casts are UB under strict aliasing
 
     const unsigned int e = (x & 0x7C00) >> 10; // Exponent
     const unsigned int m = (x & 0x03FF) << 13; // Mantissa
-    const float fm = (float)m;
-    const unsigned int v = (*(unsigned int*)&fm) >> 23; // Evil log2 bit hack to count leading zeros in denormalized format
-    const unsigned int r = (x & 0x8000) << 16 | (e != 0)*((e + 112) << 23 | m) | ((e == 0)&(m != 0))*((v - 37) << 23 | ((m << (150 - v)) & 0x007FE000)); // sign : normalized : denormalized
+    fm.f = (float)m;
+    const unsigned int v = fm.u >> 23; // Evil log2 bit hack to count leading zeros in denormalized format
+    result.u = (x & 0x8000) << 16 | (e != 0)*((e + 112) << 23 | m) | ((e == 0)&(m != 0))*((v - 37) << 23 | ((m << (150 - v)) & 0x007FE000)); // sign : normalized : denormalized
 
-    result = *(float *)&r;
-
-    return result;
+    return result.f;
 }
 
 // Convert float to half-float (stored as unsigned short)
@@ -5400,7 +5398,9 @@ static unsigned short FloatToHalf(float x)
 {
     unsigned short result = 0;
 
-    const unsigned int b = (*(unsigned int*) & x) + 0x00001000; // Round-to-nearest-even: add last bit after truncated mantissa
+    union { float f; unsigned int u; } xu;
+    xu.f = x;
+    const unsigned int b = xu.u + 0x00001000; // Round-to-nearest-even: add last bit after truncated mantissa
     const unsigned int e = (b & 0x7F800000) >> 23; // Exponent
     const unsigned int m = b & 0x007FFFFF; // Mantissa; in line below: 0x007FF000 = 0x00800000-0x00001000 = decimal indicator flag - initial rounding
 

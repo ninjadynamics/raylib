@@ -124,6 +124,8 @@
 #define RLGL_IMPLEMENTATION
 #include "rlgl.h"                   // OpenGL abstraction layer to OpenGL 1.1, 3.3+ or ES2
 
+#undef RAYMATH_STATIC_INLINE        // this TU emits the extern implementation the
+                                    // game links against (its SH4ZAM route)
 #define RAYMATH_IMPLEMENTATION
 #include "raymath.h"                // Vector2, Vector3, Quaternion and Matrix functionality
 
@@ -634,7 +636,7 @@ void InitWindow(int width, int height, const char *title)
 #if defined(PLATFORM_PSP) || defined(PLATFORM_VITA) || defined(PLATFORM_ORBIS) || defined(PLATFORM_PROSPERO)
     SetTraceLogCallback(CustomLog);
 #endif
-    TRACELOG(LOG_INFO, "[ CANARY ] Initializing MODIFIED LOCAL raylib %s [2026.07.31 13:42]", RAYLIB_VERSION);
+    TRACELOG(LOG_INFO, "[ CANARY ] Initializing MODIFIED LOCAL raylib %s [2026.07.31 14:22]", RAYLIB_VERSION);
 #ifdef USE_SH4ZAM
     TRACELOG(LOG_INFO, "Hello SH4ZAM!\n");
 #else
