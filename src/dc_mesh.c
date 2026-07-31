@@ -705,16 +705,19 @@ void dcMeshSyncColors(Mesh *mesh) {
     if (!sm->vertex_map) return;
 
     const int rl_vc = mesh->vertexCount;
-    const unsigned char *cols = mesh->colors;
+    /* Word-copy the packed RGBA: on little-endian, byte0|byte1<<8|byte2<<16|
+       byte3<<24 IS the in-memory uint32 (same packing dcMeshSyncFromRaylib
+       documents). mesh->colors is MemAlloc'd -> 4-aligned; si*4 keeps it so.
+       GCC's bswap pass refuses to merge the byte loads itself on this
+       STRICT_ALIGNMENT target. Hoist vertex_count too: the color stores are
+       uint32 like the field, so TBAA reloads the bound every iteration. */
+    const uint32_t *colw = (const uint32_t *)mesh->colors;
+    const uint32_t n = sm->vertex_count;
 
-    for (uint32_t v = 0; v < sm->vertex_count; v++) {
+    for (uint32_t v = 0; v < n; v++) {
         int si = sm->vertex_map[v];
         if (si >= rl_vc) si = si % rl_vc;
-        /* same RGBA->BGRA packing as dcMeshSyncFromRaylib (incl. its swap note) */
-        sm->vertices[v].color = ((uint32_t)cols[si * 4 + 3] << 24) |
-                                ((uint32_t)cols[si * 4 + 2] << 16) |
-                                ((uint32_t)cols[si * 4 + 1] << 8)  |
-                                ((uint32_t)cols[si * 4 + 0] << 0);
+        sm->vertices[v].color = colw[si];
     }
 
     /* Patch the live triangle-expanded cache(s): same walk as dcBatchBuildCache,
