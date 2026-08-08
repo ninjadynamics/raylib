@@ -109,8 +109,15 @@ RAYLIB_CONFIG_FLAGS  ?= NONE
 # To define additional cflags: Use make CUSTOM_CFLAGS=""
 
 # Include raylib modules on compilation
-# NOTE: Some programs like tools could not require those modules
-RAYLIB_MODULE_AUDIO  ?= TRUE
+# NOTE: Some programs like tools could not require those modules. Dreamcast's
+# custom audio stack leaves SUPPORT_MODULE_RAUDIO disabled, so do not archive
+# an empty raudio.o. Miniaudio's available backends do not currently compile
+# against KOS; SUPPORT_MODULE_RAUDIO is not a supported Dreamcast opt-in.
+ifeq ($(PLATFORM),PLATFORM_DREAMCAST)
+    RAYLIB_MODULE_AUDIO ?= FALSE
+else
+    RAYLIB_MODULE_AUDIO ?= TRUE
+endif
 RAYLIB_MODULE_MODELS ?= TRUE
 RAYLIB_MODULE_RAYGUI ?= FALSE
 RAYLIB_MODULE_SPINE  ?= FALSE
@@ -432,11 +439,7 @@ endif
 #  -D_GNU_SOURCE            access to lots of nonstandard GNU/Linux extension functions
 #  -Werror=pointer-arith    catch unportable code that does direct arithmetic on void pointers
 #  -fno-strict-aliasing     jar_xm.h does shady stuff (breaks strict aliasing)
-CFLAGS = -Wall -D_GNU_SOURCE -D$(TARGET_PLATFORM) -D$(GRAPHICS) -Wno-missing-braces -Werror=pointer-arith -fno-strict-aliasing $(CUSTOM_CFLAGS)
-
-ifneq ($(RAYLIB_CONFIG_FLAGS), NONE)
-    CFLAGS += -DEXTERNAL_CONFIG_FLAGS $(RAYLIB_CONFIG_FLAGS)
-endif
+CFLAGS = -Wall -D_GNU_SOURCE -D$(TARGET_PLATFORM) -D$(GRAPHICS) -Wno-missing-braces -Werror=pointer-arith -fno-strict-aliasing
 
 ifeq ($(TARGET_PLATFORM), PLATFORM_WEB)
     # NOTE: When using multi-threading in the user code, it requires -pthread enabled
@@ -447,22 +450,6 @@ endif
 
 ifeq ($(PLATFORM_OS), LINUX)
     CFLAGS += -fPIC
-endif
-
-ifeq ($(RAYLIB_BUILD_MODE),DEBUG)
-    CFLAGS += -g -D_DEBUG
-endif
-
-ifeq ($(RAYLIB_BUILD_MODE),RELEASE)
-    ifeq ($(TARGET_PLATFORM),PLATFORM_WEB)
-        CFLAGS += -Os
-    endif
-    ifeq ($(TARGET_PLATFORM),PLATFORM_DESKTOP_GLFW)
-        CFLAGS += -O1
-    endif
-    ifeq ($(TARGET_PLATFORM),PLATFORM_ANDROID)
-        CFLAGS += -O2
-    endif
 endif
 
 # Additional flags for compiler (if desired)
@@ -514,19 +501,6 @@ ifeq ($(TARGET_PLATFORM),PLATFORM_ANDROID)
     CFLAGS += -D__ANDROID__ -DPLATFORM_ANDROID -D__ANDROID_API__=$(ANDROID_API_VERSION)
 endif
 
-# Define required compilation flags for raylib SHARED lib
-ifeq ($(RAYLIB_LIBTYPE),SHARED)
-    # make sure code is compiled as position independent
-    # BE CAREFUL: It seems that for gcc -fpic is not the same as -fPIC
-    # MinGW32 just doesn't need -fPIC, it shows warnings
-    CFLAGS += -fPIC -DBUILD_LIBTYPE_SHARED
-
-    # hide all symbols by default, so RLAPI can expose them
-    ifeq ($(PLATFORM_OS),$(filter $(PLATFORM_OS), LINUX BSD OSX))
-        CFLAGS += -fvisibility=hidden
-    endif
-endif
-
 ifeq ($(TARGET_PLATFORM),PLATFORM_DRM)
     # without EGL_NO_X11 eglplatform.h tears Xlib.h in which tears X.h in
     # which contains a conflicting type Font
@@ -564,8 +538,6 @@ ifeq ($(TARGET_PLATFORM),PLATFORM_DESKTOP_GLFW)
     endif
 endif
 
-CFLAGS += $(CUSTOM_CFLAGS)
-
 # Define include paths for required headers: INCLUDE_PATHS
 # NOTE: Several external required libraries (stb and others)
 #------------------------------------------------------------------------------------------------
@@ -577,7 +549,10 @@ ifeq ($(PLATFORM),PLATFORM_NINTENDO64)
 endif
 
 ifeq ($(PLATFORM),PLATFORM_DREAMCAST)
-    CFLAGS = $(KOS_CFLAGS) -Wno-error=incompatible-pointer-types -D$(PLATFORM) -D$(GRAPHICS)
+    # SH4ZAM requires the compiler's GNU dialect, so do not carry the generic
+    # -std=c99 here. Preserve the common warning/aliasing contract explicitly;
+    # config, mode, shared-library and caller flags are appended below.
+    CFLAGS = $(KOS_CFLAGS) -Wall -D_GNU_SOURCE -Wno-missing-braces -Werror=pointer-arith -fno-strict-aliasing -Wno-error=incompatible-pointer-types -D$(PLATFORM) -D$(GRAPHICS)
     INCLUDE_PATHS = $(KOS_INC_PATHS)
 endif
 
@@ -602,6 +577,43 @@ ifeq ($(PLATFORM),PLATFORM_PROSPERO)
     INCLUDE_PATHS =  -I. -Iinclude -I$(PS5_PAYLOAD_SDK)/target/include/prospero
     LDFLAGS = -L$(PS5_PAYLOAD_SDK)/target/lib -L. -Llib
 endif
+
+# Apply caller/configuration flags after platform base selection. Console base
+# assignments above must not silently erase these documented build controls.
+ifneq ($(RAYLIB_CONFIG_FLAGS), NONE)
+    CFLAGS += -DEXTERNAL_CONFIG_FLAGS $(RAYLIB_CONFIG_FLAGS)
+endif
+
+ifeq ($(RAYLIB_BUILD_MODE),DEBUG)
+    CFLAGS += -g -D_DEBUG
+endif
+
+ifeq ($(RAYLIB_BUILD_MODE),RELEASE)
+    ifeq ($(TARGET_PLATFORM),PLATFORM_WEB)
+        CFLAGS += -Os
+    endif
+    ifeq ($(TARGET_PLATFORM),PLATFORM_DESKTOP_GLFW)
+        CFLAGS += -O1
+    endif
+    ifeq ($(TARGET_PLATFORM),PLATFORM_ANDROID)
+        CFLAGS += -O2
+    endif
+endif
+
+# Define required compilation flags for raylib SHARED lib
+ifeq ($(RAYLIB_LIBTYPE),SHARED)
+    # make sure code is compiled as position independent
+    # BE CAREFUL: It seems that for gcc -fpic is not the same as -fPIC
+    # MinGW32 just doesn't need -fPIC, it shows warnings
+    CFLAGS += -fPIC -DBUILD_LIBTYPE_SHARED
+
+    # hide all symbols by default, so RLAPI can expose them
+    ifeq ($(PLATFORM_OS),$(filter $(PLATFORM_OS), LINUX BSD OSX))
+        CFLAGS += -fvisibility=hidden
+    endif
+endif
+
+CFLAGS += $(CUSTOM_CFLAGS)
 
 # Define additional directories containing required header files
 ifeq ($(TARGET_PLATFORM),PLATFORM_DESKTOP_GLFW)

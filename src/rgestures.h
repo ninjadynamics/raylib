@@ -124,7 +124,7 @@ void UpdateGestures(void);                              // Update gestures detec
 
 #if defined(RGESTURES_STANDALONE)
 void SetGesturesEnabled(unsigned int flags);            // Enable a set of gestures using flags
-bool IsGestureDetected(int gesture);                    // Check if a gesture have been detected
+bool IsGestureDetected(unsigned int gesture);           // Check if a gesture have been detected
 int GetGestureDetected(void);                           // Get latest detected gesture
 
 float GetGestureHoldDuration(void);                     // Get gesture hold time in seconds
@@ -243,6 +243,7 @@ static GesturesData GESTURES = {
 static float rgVector2Angle(Vector2 initialPosition, Vector2 finalPosition);
 static float rgVector2Distance(Vector2 v1, Vector2 v2);
 static double rgGetCurrentTime(void);
+static void rgResetGestureState(void);
 
 //----------------------------------------------------------------------------------
 // Module Functions Definition
@@ -257,13 +258,19 @@ void SetGesturesEnabled(unsigned int flags)
 // Check if a gesture have been detected
 bool IsGestureDetected(unsigned int gesture)
 {
-    if ((GESTURES.enabledFlags & GESTURES.current) == gesture) return true;
+    if ((gesture != GESTURE_NONE) && ((GESTURES.enabledFlags & GESTURES.current) == gesture)) return true;
     else return false;
 }
 
 // Process gesture event and translate it into gestures
 void ProcessGestureEvent(GestureEvent event)
 {
+    if ((event.touchAction == TOUCH_ACTION_CANCEL) || (event.pointCount < 0) || (event.pointCount > MAX_TOUCH_POINTS))
+    {
+        rgResetGestureState();
+        return;
+    }
+
     // Reset required variables
     GESTURES.Touch.pointCount = event.pointCount;      // Required on UpdateGestures()
 
@@ -271,10 +278,11 @@ void ProcessGestureEvent(GestureEvent event)
     {
         if (event.touchAction == TOUCH_ACTION_DOWN)
         {
+            double eventTime = rgGetCurrentTime();
             GESTURES.Touch.tapCounter++;    // Tap counter
 
             // Detect GESTURE_DOUBLE_TAP
-            if ((GESTURES.current == GESTURE_NONE) && (GESTURES.Touch.tapCounter >= 2) && ((rgGetCurrentTime() - GESTURES.Touch.eventTime) < TAP_TIMEOUT) && (rgVector2Distance(GESTURES.Touch.downPositionA, event.position[0]) < DOUBLETAP_RANGE))
+            if ((GESTURES.current == GESTURE_NONE) && (GESTURES.Touch.tapCounter >= 2) && ((eventTime - GESTURES.Touch.eventTime) < TAP_TIMEOUT) && (rgVector2Distance(GESTURES.Touch.downPositionA, event.position[0]) < DOUBLETAP_RANGE))
             {
                 GESTURES.current = GESTURE_DOUBLETAP;
                 GESTURES.Touch.tapCounter = 0;
@@ -289,11 +297,13 @@ void ProcessGestureEvent(GestureEvent event)
             GESTURES.Touch.downDragPosition = event.position[0];
 
             GESTURES.Touch.upPosition = GESTURES.Touch.downPositionA;
-            GESTURES.Touch.eventTime = rgGetCurrentTime();
-
-            GESTURES.Swipe.startTime = rgGetCurrentTime();
+            GESTURES.Touch.eventTime = eventTime;
+            GESTURES.Swipe.startTime = eventTime;
 
             GESTURES.Drag.vector = (Vector2){ 0.0f, 0.0f };
+            GESTURES.Pinch.distance = 0.0f;
+            GESTURES.Pinch.angle = 0.0f;
+            GESTURES.Pinch.vector = (Vector2){ 0.0f, 0.0f };
         }
         else if (event.touchAction == TOUCH_ACTION_UP)
         {
@@ -302,7 +312,8 @@ void ProcessGestureEvent(GestureEvent event)
 
             // NOTE: GESTURES.Drag.intensity dependent on the resolution of the screen
             GESTURES.Drag.distance = rgVector2Distance(GESTURES.Touch.downPositionA, GESTURES.Touch.upPosition);
-            GESTURES.Drag.intensity = GESTURES.Drag.distance/(float)((rgGetCurrentTime() - GESTURES.Swipe.startTime));
+            double elapsed = rgGetCurrentTime() - GESTURES.Swipe.startTime;
+            GESTURES.Drag.intensity = (elapsed > 0.0)? GESTURES.Drag.distance*(float)(1.0/elapsed) : 0.0f;
 
             // Detect GESTURE_SWIPE
             if ((GESTURES.Drag.intensity > FORCE_TO_SWIPE) && (GESTURES.current != GESTURE_DRAG))
@@ -356,11 +367,13 @@ void ProcessGestureEvent(GestureEvent event)
         {
             GESTURES.Touch.downPositionA = event.position[0];
             GESTURES.Touch.downPositionB = event.position[1];
+            GESTURES.Touch.moveDownPositionA = event.position[0];
+            GESTURES.Touch.moveDownPositionB = event.position[1];
 
             GESTURES.Touch.previousPositionA = GESTURES.Touch.downPositionA;
             GESTURES.Touch.previousPositionB = GESTURES.Touch.downPositionB;
 
-            //GESTURES.Pinch.distance = rgVector2Distance(GESTURES.Touch.downPositionA, GESTURES.Touch.downPositionB);
+            GESTURES.Pinch.distance = rgVector2Distance(GESTURES.Touch.downPositionA, GESTURES.Touch.downPositionB);
 
             GESTURES.Pinch.vector.x = GESTURES.Touch.downPositionB.x - GESTURES.Touch.downPositionA.x;
             GESTURES.Pinch.vector.y = GESTURES.Touch.downPositionB.y - GESTURES.Touch.downPositionA.y;
@@ -370,10 +383,9 @@ void ProcessGestureEvent(GestureEvent event)
         }
         else if (event.touchAction == TOUCH_ACTION_MOVE)
         {
-            GESTURES.Pinch.distance = rgVector2Distance(GESTURES.Touch.moveDownPositionA, GESTURES.Touch.moveDownPositionB);
-
             GESTURES.Touch.moveDownPositionA = event.position[0];
             GESTURES.Touch.moveDownPositionB = event.position[1];
+            GESTURES.Pinch.distance = rgVector2Distance(GESTURES.Touch.moveDownPositionA, GESTURES.Touch.moveDownPositionB);
 
             GESTURES.Pinch.vector.x = GESTURES.Touch.moveDownPositionB.x - GESTURES.Touch.moveDownPositionA.x;
             GESTURES.Pinch.vector.y = GESTURES.Touch.moveDownPositionB.y - GESTURES.Touch.moveDownPositionA.y;
@@ -391,6 +403,9 @@ void ProcessGestureEvent(GestureEvent event)
 
             // NOTE: Angle should be inverted in Y
             GESTURES.Pinch.angle = 360.0f - rgVector2Angle(GESTURES.Touch.moveDownPositionA, GESTURES.Touch.moveDownPositionB);
+
+            GESTURES.Touch.previousPositionA = GESTURES.Touch.moveDownPositionA;
+            GESTURES.Touch.previousPositionB = GESTURES.Touch.moveDownPositionB;
         }
         else if (event.touchAction == TOUCH_ACTION_UP)
         {
@@ -501,9 +516,28 @@ static float rgVector2Distance(Vector2 v1, Vector2 v2)
     float dx = v2.x - v1.x;
     float dy = v2.y - v1.y;
 
-    result = (float)sqrt(dx*dx + dy*dy);
+    result = sqrtf(dx*dx + dy*dy);
 
     return result;
+}
+
+// Reset transient state after cancellation or malformed input so stale drag/pinch data cannot leak.
+static void rgResetGestureState(void)
+{
+    GESTURES.current = GESTURE_NONE;
+    GESTURES.Touch.firstId = -1;
+    GESTURES.Touch.pointCount = 0;
+    GESTURES.Touch.tapCounter = 0;
+    GESTURES.Touch.downDragPosition = (Vector2){ 0.0f, 0.0f };
+    GESTURES.Hold.resetRequired = true;
+    GESTURES.Hold.timeDuration = 0.0;
+    GESTURES.Drag.vector = (Vector2){ 0.0f, 0.0f };
+    GESTURES.Drag.angle = 0.0f;
+    GESTURES.Drag.distance = 0.0f;
+    GESTURES.Drag.intensity = 0.0f;
+    GESTURES.Pinch.vector = (Vector2){ 0.0f, 0.0f };
+    GESTURES.Pinch.angle = 0.0f;
+    GESTURES.Pinch.distance = 0.0f;
 }
 
 // Time measure returned are seconds

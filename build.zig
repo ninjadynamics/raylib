@@ -379,6 +379,8 @@ pub const PlatformBackend = enum {
 };
 
 pub fn build(b: *std.Build) !void {
+    // Dreamcast requires KOS + GLdc and is built through src/Makefile. Keep
+    // this host-oriented generator from implying support for its DCMesh API.
     // Standard target options allows the person running `zig build` to choose
     // what target to build for. Here we do not override the defaults, which
     // means any target is allowed, and the default is native. Other options

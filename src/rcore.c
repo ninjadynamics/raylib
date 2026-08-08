@@ -120,6 +120,11 @@
 #include <string.h>                 // Required for: strrchr(), strcmp(), strlen(), memset()
 #include <time.h>                   // Required for: time() [Used in InitTimer()]
 #include <math.h>                   // Required for: tan() [Used in BeginMode3D()], atan2f() [Used in LoadVrStereoConfig()]
+#include <limits.h>                 // Required for: INT_MAX
+
+#ifndef RAYLIB_LOCAL_BUILD_TAG
+    #define RAYLIB_LOCAL_BUILD_TAG     "unstamped"
+#endif
 
 #define RLGL_IMPLEMENTATION
 #include "rlgl.h"                   // OpenGL abstraction layer to OpenGL 1.1, 3.3+ or ES2
@@ -510,8 +515,10 @@ static void InitTimer(void);                                // Initialize timer,
 static void SetupFramebuffer(int width, int height);        // Setup main framebuffer (required by InitPlatform())
 static void SetupViewport(int width, int height);           // Set viewport for a provided width and height
 
+static bool AppendDirectoryPath(FilePathList *list, const char *path);                          // Append one exact-size path, growing the pointer table on demand
 static void ScanDirectoryFiles(const char *basePath, FilePathList *list, const char *filter);   // Scan all files and directories in a base path
 static void ScanDirectoryFilesRecursively(const char *basePath, FilePathList *list, const char *filter);  // Scan all files and directories recursively from a base path
+static void ScanDirectoryFilesRecursivelyDepth(const char *basePath, FilePathList *list, const char *filter, unsigned int depth);
 
 #if defined(SUPPORT_AUTOMATION_EVENTS)
 static void RecordAutomationEvent(void); // Record frame events (to internal events array)
@@ -636,7 +643,7 @@ void InitWindow(int width, int height, const char *title)
 #if defined(PLATFORM_PSP) || defined(PLATFORM_VITA) || defined(PLATFORM_ORBIS) || defined(PLATFORM_PROSPERO)
     SetTraceLogCallback(CustomLog);
 #endif
-    TRACELOG(LOG_INFO, "[ CANARY ] Initializing MODIFIED LOCAL raylib %s [2026.07.31 14:22]", RAYLIB_VERSION);
+    TRACELOG(LOG_INFO, "[ CANARY ] raylib-dc local build %s [%s]", RAYLIB_VERSION, RAYLIB_LOCAL_BUILD_TAG);
 #ifdef USE_SH4ZAM
     TRACELOG(LOG_INFO, "Hello SH4ZAM!\n");
 #else
@@ -791,6 +798,12 @@ void InitWindow(int width, int height, const char *title)
 // Close window and unload OpenGL context
 void CloseWindow(void)
 {
+    if (!CORE.Window.ready)
+    {
+        TRACELOG(LOG_WARNING, "Window could not be closed, not currently initialized");
+        return;
+    }
+
 #if defined(SUPPORT_GIF_RECORDING)
     if (gifRecording)
     {
@@ -805,6 +818,7 @@ void CloseWindow(void)
 #endif
 
     rlglClose();                // De-init rlgl
+    isGpuReady = false;
 
     // De-initialize platform
     //--------------------------------------------------------------
@@ -1361,6 +1375,7 @@ VrStereoConfig LoadVrStereoConfig(VrDeviceInfo device)
 // Unload VR stereo config properties
 void UnloadVrStereoConfig(VrStereoConfig config)
 {
+    (void)config;
     TRACELOG(LOG_INFO, "UnloadVrStereoConfig not implemented in rcore.c");
 }
 
@@ -1765,7 +1780,7 @@ int GetFPS(void)
         average += history[index];
     }
 
-    fps = (int)roundf(1.0f/average);
+    if (average > 0.0f) fps = (int)roundf(1.0f/average);
 #endif
 
     return fps;
@@ -1959,15 +1974,33 @@ void UnloadRandomSequence(int *sequence)
 void TakeScreenshot(const char *fileName)
 {
 #if defined(SUPPORT_MODULE_RTEXTURES)
+    if ((fileName == NULL) || (fileName[0] == '\0'))
+    {
+        TRACELOG(LOG_WARNING, "SYSTEM: Screenshot fileName is not valid");
+        return;
+    }
+
     // Security check to (partially) avoid malicious code
     if (strchr(fileName, '\'') != NULL) { TRACELOG(LOG_WARNING, "SYSTEM: Provided fileName could be potentially malicious, avoid [\'] character"); return; }
 
     Vector2 scale = GetWindowScaleDPI();
     unsigned char *imgData = rlReadScreenPixels((int)((float)CORE.Window.render.width*scale.x), (int)((float)CORE.Window.render.height*scale.y));
+    if (imgData == NULL)
+    {
+        TRACELOG(LOG_WARNING, "SYSTEM: Screenshot pixels could not be read");
+        return;
+    }
+
     Image image = { imgData, (int)((float)CORE.Window.render.width*scale.x), (int)((float)CORE.Window.render.height*scale.y), 1, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8 };
 
     char path[512] = { 0 };
-    strcpy(path, TextFormat("%s/%s", CORE.Storage.basePath, GetFileName(fileName)));
+    int pathLength = snprintf(path, sizeof(path), "%s/%s", (CORE.Storage.basePath != NULL)? CORE.Storage.basePath : ".", GetFileName(fileName));
+    if ((pathLength < 0) || (pathLength >= (int)sizeof(path)))
+    {
+        TRACELOG(LOG_WARNING, "SYSTEM: Screenshot path is too long");
+        RL_FREE(imgData);
+        return;
+    }
 
     ExportImage(image, path);           // WARNING: Module required: rtextures
     RL_FREE(imgData);
@@ -1998,6 +2031,7 @@ void SetConfigFlags(unsigned int flags)
 bool FileExists(const char *fileName)
 {
     bool result = false;
+    if ((fileName == NULL) || (fileName[0] == '\0')) return false;
 
 #if defined(_WIN32)
     if (_access(fileName, 0) != -1) result = true;
@@ -2020,6 +2054,8 @@ bool IsFileExtension(const char *fileName, const char *ext)
     #define MAX_FILE_EXTENSION_LENGTH  16
 
     bool result = false;
+    if ((fileName == NULL) || (ext == NULL)) return false;
+
     const char *fileExt = GetFileExtension(fileName);
 
     if (fileExt != NULL)
@@ -2051,6 +2087,7 @@ bool IsFileExtension(const char *fileName, const char *ext)
 bool DirectoryExists(const char *dirPath)
 {
     bool result = false;
+    if ((dirPath == NULL) || (dirPath[0] == '\0')) return false;
 #if !defined(PLATFORM_VITA) && !defined(PLATFORM_ORBIS) && !defined(PLATFORM_PROSPERO) && !defined(PLATFORM_NINTENDO64)
     DIR *dir = opendir(dirPath);
 
@@ -2068,6 +2105,7 @@ bool DirectoryExists(const char *dirPath)
 int GetFileLength(const char *fileName)
 {
     int size = 0;
+    if ((fileName == NULL) || (fileName[0] == '\0')) return 0;
 
     // NOTE: On Unix-like systems, it can by used the POSIX system call: stat(),
     // but depending on the platform that call could not be available
@@ -2079,12 +2117,12 @@ int GetFileLength(const char *fileName)
 
     if (file != NULL)
     {
-        fseek(file, 0L, SEEK_END);
-        long int fileSize = ftell(file);
+        long int fileSize = -1;
+        if (fseek(file, 0L, SEEK_END) == 0) fileSize = ftell(file);
 
         // Check for size overflow (INT_MAX)
-        if (fileSize > 2147483647) TRACELOG(LOG_WARNING, "[%s] File size overflows expected limit, do not use GetFileLength()", fileName);
-        else size = (int)fileSize;
+        if (fileSize > INT_MAX) TRACELOG(LOG_WARNING, "[%s] File size overflows expected limit, do not use GetFileLength()", fileName);
+        else if (fileSize >= 0) size = (int)fileSize;
 
         fclose(file);
     }
@@ -2095,9 +2133,14 @@ int GetFileLength(const char *fileName)
 // Get pointer to extension for a filename string (includes the dot: .png)
 const char *GetFileExtension(const char *fileName)
 {
-    const char *dot = strrchr(fileName, '.');
+    if (fileName == NULL) return NULL;
 
-    if (!dot || dot == fileName) return NULL;
+    const char *dot = strrchr(fileName, '.');
+    const char *lastSeparator = strrchr(fileName, '/');
+    const char *backslash = strrchr(fileName, '\\');
+    if ((backslash != NULL) && ((lastSeparator == NULL) || (backslash > lastSeparator))) lastSeparator = backslash;
+
+    if (!dot || (dot == fileName) || ((lastSeparator != NULL) && (dot <= (lastSeparator + 1)))) return NULL;
 
     return dot;
 }
@@ -2134,7 +2177,14 @@ const char *GetFileNameWithoutExt(const char *filePath)
 
     if (filePath != NULL)
     {
-        strcpy(fileName, GetFileName(filePath)); // Get filename.ext without path
+        int length = snprintf(fileName, sizeof(fileName), "%s", GetFileName(filePath)); // Get filename.ext without path
+        if ((length < 0) || (length >= (int)sizeof(fileName)))
+        {
+            TRACELOG(LOG_WARNING, "FILEIO: File name is too long");
+            fileName[0] = '\0';
+            return fileName;
+        }
+
         int size = (int)strlen(fileName); // Get size in bytes
 
         for (int i = size; i > 0; i--) // Reverse search '.'
@@ -2167,9 +2217,21 @@ const char *GetDirectoryPath(const char *filePath)
     static char dirPath[MAX_FILEPATH_LENGTH] = { 0 };
     memset(dirPath, 0, MAX_FILEPATH_LENGTH);
 
+    if ((filePath == NULL) || (filePath[0] == '\0')) return dirPath;
+
+    size_t filePathLength = strlen(filePath);
+    if (filePathLength >= MAX_FILEPATH_LENGTH)
+    {
+        TRACELOG(LOG_WARNING, "FILEIO: File path is too long");
+        return dirPath;
+    }
+
+    bool hasDrive = (filePathLength > 1) && (filePath[1] == ':');
+    bool isAbsolute = hasDrive || (filePath[0] == '\\') || (filePath[0] == '/');
+
     // In case provided path does not contain a root drive letter (C:\, D:\) nor leading path separator (\, /),
     // we add the current directory path to dirPath
-    if (filePath[1] != ':' && filePath[0] != '\\' && filePath[0] != '/')
+    if (!isAbsolute)
     {
         // For security, we set starting path to current directory,
         // obtained path will be concatenated to this
@@ -2188,11 +2250,18 @@ const char *GetDirectoryPath(const char *filePath)
         }
         else
         {
-            // NOTE: Be careful, strncpy() is not safe, it does not care about '\0'
-            char *dirPathPtr = dirPath;
-            if ((filePath[1] != ':') && (filePath[0] != '\\') && (filePath[0] != '/')) dirPathPtr += 2;     // Skip drive letter, "C:"
-            memcpy(dirPathPtr, filePath, strlen(filePath) - (strlen(lastSlash) - 1));
-            dirPath[strlen(filePath) - strlen(lastSlash) + (((filePath[1] != ':') && (filePath[0] != '\\') && (filePath[0] != '/'))? 2 : 0)] = '\0';  // Add '\0' manually
+            size_t prefixLength = isAbsolute? 0 : 2;
+            size_t directoryLength = (size_t)(lastSlash - filePath) + 1;
+
+            if ((prefixLength + directoryLength) >= sizeof(dirPath))
+            {
+                TRACELOG(LOG_WARNING, "FILEIO: Directory path is too long");
+                dirPath[0] = '\0';
+                return dirPath;
+            }
+
+            memcpy(dirPath + prefixLength, filePath, directoryLength);
+            dirPath[prefixLength + directoryLength] = '\0';
         }
     }
 
@@ -2204,9 +2273,19 @@ const char *GetPrevDirectoryPath(const char *dirPath)
 {
     static char prevDirPath[MAX_FILEPATH_LENGTH] = { 0 };
     memset(prevDirPath, 0, MAX_FILEPATH_LENGTH);
-    int pathLen = (int)strlen(dirPath);
 
-    if (pathLen <= 3) strcpy(prevDirPath, dirPath);
+    if ((dirPath == NULL) || (dirPath[0] == '\0')) return prevDirPath;
+
+    size_t inputLength = strlen(dirPath);
+    if (inputLength >= sizeof(prevDirPath))
+    {
+        TRACELOG(LOG_WARNING, "FILEIO: Directory path is too long");
+        return prevDirPath;
+    }
+
+    int pathLen = (int)inputLength;
+
+    if (pathLen <= 3) memcpy(prevDirPath, dirPath, inputLength + 1);
 
     for (int i = (pathLen - 1); (i >= 0) && (pathLen > 3); i--)
     {
@@ -2215,7 +2294,8 @@ const char *GetPrevDirectoryPath(const char *dirPath)
             // Check for root: "C:\" or "/"
             if (((i == 2) && (dirPath[1] ==':')) || (i == 0)) i++;
 
-            strncpy(prevDirPath, dirPath, i);
+            memcpy(prevDirPath, dirPath, i);
+            prevDirPath[i] = '\0';
             break;
         }
     }
@@ -2329,6 +2409,15 @@ const char *GetApplicationDirectory(void)
         appDir[1] = '/';
     }
 
+#elif defined(PLATFORM_DREAMCAST)
+    const char *workingDirectory = GetWorkingDirectory();
+    if (workingDirectory != NULL)
+    {
+        int length = snprintf(appDir, sizeof(appDir), "%s%s", workingDirectory,
+            ((workingDirectory[0] != '\0') && (workingDirectory[strlen(workingDirectory) - 1] == '/'))? "" : "/");
+        if ((length < 0) || (length >= (int)sizeof(appDir))) appDir[0] = '\0';
+    }
+
 #endif
 
     return appDir;
@@ -2336,40 +2425,13 @@ const char *GetApplicationDirectory(void)
 
 // Load directory filepaths
 // NOTE: Base path is prepended to the scanned filepaths
-// WARNING: Directory is scanned twice, first time to get files count
 // No recursive scanning is done!
 FilePathList LoadDirectoryFiles(const char *dirPath)
 {
     FilePathList files = { 0 };
-    unsigned int fileCounter = 0;
 #if !defined(PLATFORM_VITA) && !defined(PLATFORM_ORBIS) && !defined(PLATFORM_PROSPERO) && !defined(PLATFORM_NINTENDO64)
-    struct dirent *entity;
-    DIR *dir = opendir(dirPath);
-
-    if (dir != NULL) // It's a directory
-    {
-        // SCAN 1: Count files
-        while ((entity = readdir(dir)) != NULL)
-        {
-            // NOTE: We skip '.' (current dir) and '..' (parent dir) filepaths
-            if ((strcmp(entity->d_name, ".") != 0) && (strcmp(entity->d_name, "..") != 0)) fileCounter++;
-        }
-
-        // Memory allocation for dirFileCount
-        files.capacity = fileCounter;
-        files.paths = (char **)RL_MALLOC(files.capacity*sizeof(char *));
-        for (unsigned int i = 0; i < files.capacity; i++) files.paths[i] = (char *)RL_MALLOC(MAX_FILEPATH_LENGTH*sizeof(char));
-
-        closedir(dir);
-
-        // SCAN 2: Read filepaths
-        // NOTE: Directory paths are also registered
-        ScanDirectoryFiles(dirPath, &files, NULL);
-
-        // Security check: read files.count should match fileCounter
-        if (files.count != files.capacity) TRACELOG(LOG_WARNING, "FILEIO: Read files count do not match capacity allocated");
-    }
-    else TRACELOG(LOG_WARNING, "FILEIO: Failed to open requested directory");  // Maybe it's a file...
+    if ((dirPath != NULL) && (dirPath[0] != '\0')) ScanDirectoryFiles(dirPath, &files, NULL);
+    else TRACELOG(LOG_WARNING, "FILEIO: Directory path is not valid");
 #endif
     return files;
 }
@@ -2380,22 +2442,21 @@ FilePathList LoadDirectoryFilesEx(const char *basePath, const char *filter, bool
 {
     FilePathList files = { 0 };
 
-    files.capacity = MAX_FILEPATH_CAPACITY;
-    files.paths = (char **)RL_CALLOC(files.capacity, sizeof(char *));
-    for (unsigned int i = 0; i < files.capacity; i++) files.paths[i] = (char *)RL_CALLOC(MAX_FILEPATH_LENGTH, sizeof(char));
-
     // WARNING: basePath is always prepended to scanned paths
-    if (scanSubdirs) ScanDirectoryFilesRecursively(basePath, &files, filter);
-    else ScanDirectoryFiles(basePath, &files, filter);
+    if ((basePath != NULL) && (basePath[0] != '\0'))
+    {
+        if (scanSubdirs) ScanDirectoryFilesRecursively(basePath, &files, filter);
+        else ScanDirectoryFiles(basePath, &files, filter);
+    }
+    else TRACELOG(LOG_WARNING, "FILEIO: Directory path is not valid");
 
     return files;
 }
 
 // Unload directory filepaths
-// WARNING: files.count is not reseted to 0 after unloading
 void UnloadDirectoryFiles(FilePathList files)
 {
-    for (unsigned int i = 0; i < files.capacity; i++) RL_FREE(files.paths[i]);
+    for (unsigned int i = 0; i < files.count; i++) RL_FREE(files.paths[i]);
 
     RL_FREE(files.paths);
 }
@@ -2407,9 +2468,18 @@ int MakeDirectory(const char *dirPath)
     if (DirectoryExists(dirPath)) return 0; // Path already exists (is valid)
 
     // Copy path string to avoid modifying original
-    int len = (int)strlen(dirPath) + 1;
+    size_t pathLength = strlen(dirPath);
+    if (pathLength >= INT_MAX) return 1;
+    int len = (int)pathLength + 1;
     char *pathcpy = (char *)RL_CALLOC(len, 1);
+    if (pathcpy == NULL)
+    {
+        TRACELOG(LOG_WARNING, "FILEIO: Failed to allocate directory path");
+        return 1;
+    }
+
     memcpy(pathcpy, dirPath, len);
+    int result = 0;
 
     // Iterate over pathcpy, create each subdirectory as needed
     for (int i = 0; (i < len) && (pathcpy[i] != '\0'); i++)
@@ -2419,24 +2489,28 @@ int MakeDirectory(const char *dirPath)
         {
             if ((pathcpy[i] == '\\') || (pathcpy[i] == '/'))
             {
+                if (i == 0) continue; // Root path separator
+
                 pathcpy[i] = '\0';
-                if (!DirectoryExists(pathcpy)) MKDIR(pathcpy);
+                if (!DirectoryExists(pathcpy) && (MKDIR(pathcpy) != 0) && !DirectoryExists(pathcpy)) result = 1;
                 pathcpy[i] = '/';
+                if (result != 0) break;
             }
         }
     }
 
     // Create final directory
-    if (!DirectoryExists(pathcpy)) MKDIR(pathcpy);
+    if ((result == 0) && !DirectoryExists(pathcpy) && (MKDIR(pathcpy) != 0) && !DirectoryExists(pathcpy)) result = 1;
 
     RL_FREE(pathcpy);
 
-    return 0;
+    return result;
 }
 
 // Change working directory, returns true on success
 bool ChangeDirectory(const char *dir)
 {
+    if ((dir == NULL) || (dir[0] == '\0')) return false;
 #if !defined(PLATFORM_VITA) && !defined(PLATFORM_ORBIS) && !defined(PLATFORM_PROSPERO) && !defined(PLATFORM_NINTENDO64)
     bool result = CHDIR(dir);
 
@@ -2450,8 +2524,10 @@ bool ChangeDirectory(const char *dir)
 // Check if a given path point to a file
 bool IsPathFile(const char *path)
 {
+    if ((path == NULL) || (path[0] == '\0')) return false;
+
     struct stat result = { 0 };
-    stat(path, &result);
+    if (stat(path, &result) != 0) return false;
 
     return S_ISREG(result.st_mode);
 }
@@ -2459,9 +2535,9 @@ bool IsPathFile(const char *path)
 // Check if fileName is valid for the platform/OS
 bool IsFileNameValid(const char *fileName)
 {
-    bool valid = true;
+    bool valid = ((fileName != NULL) && (fileName[0] != '\0'));
 
-    if ((fileName != NULL) && (fileName[0] != '\0'))
+    if (valid)
     {
         int length = (int)strlen(fileName);
         bool allPeriods = true;
@@ -2556,6 +2632,7 @@ long GetFileModTime(const char *fileName)
 {
     struct stat result = { 0 };
     long modTime = 0;
+    if ((fileName == NULL) || (fileName[0] == '\0')) return 0;
 
     if (stat(fileName, &result) == 0)
     {
@@ -2574,6 +2651,9 @@ long GetFileModTime(const char *fileName)
 // Compress data (DEFLATE algorithm)
 unsigned char *CompressData(const unsigned char *data, int dataSize, int *compDataSize)
 {
+    (void)data;
+    (void)dataSize;
+    (void)compDataSize;
     #define COMPRESSION_QUALITY_DEFLATE  8
 
     unsigned char *compData = NULL;
@@ -2596,6 +2676,9 @@ unsigned char *CompressData(const unsigned char *data, int dataSize, int *compDa
 // Decompress data (DEFLATE algorithm)
 unsigned char *DecompressData(const unsigned char *compData, int compDataSize, int *dataSize)
 {
+    (void)compData;
+    (void)compDataSize;
+    (void)dataSize;
     unsigned char *data = NULL;
 
 #if defined(SUPPORT_COMPRESSION_API)
@@ -2629,9 +2712,18 @@ char *EncodeDataBase64(const unsigned char *data, int dataSize, int *outputSize)
 
     static const int modTable[] = { 0, 2, 1 };
 
+    if (outputSize == NULL) return NULL;
+    *outputSize = 0;
+
+    if ((dataSize < 0) || ((dataSize > 0) && (data == NULL)) || (dataSize > (INT_MAX/4)*3 - 2))
+    {
+        TRACELOG(LOG_WARNING, "SYSTEM: Invalid Base64 input data");
+        return NULL;
+    }
+
     *outputSize = 4*((dataSize + 2)/3);
 
-    char *encodedData = (char *)RL_MALLOC(*outputSize);
+    char *encodedData = (char *)RL_MALLOC((*outputSize > 0)? *outputSize : 1);
 
     if (encodedData == NULL) return NULL;   // Security check
 
@@ -2664,48 +2756,74 @@ unsigned char *DecodeDataBase64(const unsigned char *data, int *outputSize)
         37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51
     };
 
-    // Get output size of Base64 input data
-    int outSize = 0;
-    for (int i = 0; data[4*i] != 0; i++)
+    if (outputSize == NULL) return NULL;
+    *outputSize = 0;
+
+    if (data == NULL)
     {
-        if (data[4*i + 3] == '=')
-        {
-            if (data[4*i + 2] == '=') outSize += 1;
-            else outSize += 2;
-        }
-        else outSize += 3;
+        TRACELOG(LOG_WARNING, "SYSTEM: Invalid Base64 input data");
+        return NULL;
     }
+
+    size_t inputSize = strlen((const char *)data);
+    if ((inputSize%4) != 0)
+    {
+        TRACELOG(LOG_WARNING, "SYSTEM: Invalid Base64 input length");
+        return NULL;
+    }
+
+    int padding = 0;
+    if ((inputSize > 0) && (data[inputSize - 1] == '=')) padding++;
+    if ((inputSize > 1) && (data[inputSize - 2] == '=')) padding++;
+
+    for (size_t i = 0; i < inputSize; i++)
+    {
+        unsigned char value = data[i];
+        bool paddingCharacter = (value == '=');
+        bool validCharacter = ((value >= 'A') && (value <= 'Z')) ||
+                              ((value >= 'a') && (value <= 'z')) ||
+                              ((value >= '0') && (value <= '9')) ||
+                              (value == '+') || (value == '/');
+
+        if (paddingCharacter)
+        {
+            if (i < (inputSize - (size_t)padding))
+            {
+                TRACELOG(LOG_WARNING, "SYSTEM: Invalid Base64 padding");
+                return NULL;
+            }
+        }
+        else if (!validCharacter)
+        {
+            TRACELOG(LOG_WARNING, "SYSTEM: Invalid Base64 character");
+            return NULL;
+        }
+    }
+
+    size_t decodedSize = (inputSize/4)*3 - (size_t)padding;
+    if (decodedSize > INT_MAX)
+    {
+        TRACELOG(LOG_WARNING, "SYSTEM: Decoded Base64 data is too large");
+        return NULL;
+    }
+
+    int outSize = (int)decodedSize;
 
     // Allocate memory to store decoded Base64 data
-    unsigned char *decodedData = (unsigned char *)RL_MALLOC(outSize);
+    unsigned char *decodedData = (unsigned char *)RL_MALLOC((outSize > 0)? outSize : 1);
+    if (decodedData == NULL) return NULL;
 
-    for (int i = 0; i < outSize/3; i++)
+    int outputIndex = 0;
+    for (size_t i = 0; i < inputSize; i += 4)
     {
-        unsigned char a = base64decodeTable[(int)data[4*i]];
-        unsigned char b = base64decodeTable[(int)data[4*i + 1]];
-        unsigned char c = base64decodeTable[(int)data[4*i + 2]];
-        unsigned char d = base64decodeTable[(int)data[4*i + 3]];
+        unsigned char a = base64decodeTable[data[i]];
+        unsigned char b = base64decodeTable[data[i + 1]];
+        unsigned char c = (data[i + 2] == '=')? 0 : base64decodeTable[data[i + 2]];
+        unsigned char d = (data[i + 3] == '=')? 0 : base64decodeTable[data[i + 3]];
 
-        decodedData[3*i] = (a << 2) | (b >> 4);
-        decodedData[3*i + 1] = (b << 4) | (c >> 2);
-        decodedData[3*i + 2] = (c << 6) | d;
-    }
-
-    if (outSize%3 == 1)
-    {
-        int n = outSize/3;
-        unsigned char a = base64decodeTable[(int)data[4*n]];
-        unsigned char b = base64decodeTable[(int)data[4*n + 1]];
-        decodedData[outSize - 1] = (a << 2) | (b >> 4);
-    }
-    else if (outSize%3 == 2)
-    {
-        int n = outSize/3;
-        unsigned char a = base64decodeTable[(int)data[4*n]];
-        unsigned char b = base64decodeTable[(int)data[4*n + 1]];
-        unsigned char c = base64decodeTable[(int)data[4*n + 2]];
-        decodedData[outSize - 2] = (a << 2) | (b >> 4);
-        decodedData[outSize - 1] = (b << 4) | (c >> 2);
+        if (outputIndex < outSize) decodedData[outputIndex++] = (a << 2) | (b >> 4);
+        if (outputIndex < outSize) decodedData[outputIndex++] = (b << 4) | (c >> 2);
+        if (outputIndex < outSize) decodedData[outputIndex++] = (c << 6) | d;
     }
 
     *outputSize = outSize;
@@ -2898,14 +3016,28 @@ unsigned int *ComputeSHA1(unsigned char *data, int dataSize) {
     // Append '0' bit until message length in bit 448 (mod 512)
     // Append length mod (2 pow 64) to message
 
-    int newDataSize = ((((dataSize + 8)/64) + 1)*64);
+    if ((dataSize < 0) || ((dataSize > 0) && (data == NULL)) || (dataSize > (INT_MAX - 72)))
+    {
+        memset(hash, 0, sizeof(hash));
+        TRACELOG(LOG_WARNING, "SYSTEM: Invalid SHA1 input data");
+        return hash;
+    }
+
+    int newDataSize = (int)((((size_t)dataSize + 9 + 63)/64)*64);
 
     unsigned char *msg = RL_CALLOC(newDataSize, 1); // Initialize with '0' bits
-    memcpy(msg, data, dataSize);
+    if (msg == NULL)
+    {
+        memset(hash, 0, sizeof(hash));
+        TRACELOG(LOG_WARNING, "SYSTEM: Failed to allocate SHA1 work buffer");
+        return hash;
+    }
+
+    if (dataSize > 0) memcpy(msg, data, dataSize);
     msg[dataSize] = 128; // Write the '1' bit
 
-    unsigned int bitsLen = 8*dataSize;
-    msg[newDataSize-1] = bitsLen;
+    unsigned long long bitsLen = (unsigned long long)(unsigned int)dataSize*8ULL;
+    for (int i = 0; i < 8; i++) msg[newDataSize - 1 - i] = (unsigned char)(bitsLen >> (i*8));
 
     // Process the message in successive 512-bit chunks
     for (int offset = 0; offset < newDataSize; offset += (512/8))
@@ -2966,7 +3098,7 @@ unsigned int *ComputeSHA1(unsigned char *data, int dataSize) {
         hash[4] += e;
     }
 
-    free(msg);
+    RL_FREE(msg);
 
     return hash;
 }
@@ -2978,13 +3110,20 @@ unsigned int *ComputeSHA1(unsigned char *data, int dataSize) {
 // Load automation events list from file, NULL for empty list, capacity = MAX_AUTOMATION_EVENTS
 AutomationEventList LoadAutomationEventList(const char *fileName)
 {
+    (void)fileName;
     AutomationEventList list = { 0 };
 
+#if defined(SUPPORT_AUTOMATION_EVENTS)
     // Allocate and empty automation event list, ready to record new events
     list.events = (AutomationEvent *)RL_CALLOC(MAX_AUTOMATION_EVENTS, sizeof(AutomationEvent));
+    if (list.events == NULL)
+    {
+        TRACELOG(LOG_WARNING, "AUTOMATION: Failed to allocate events list");
+        return list;
+    }
+
     list.capacity = MAX_AUTOMATION_EVENTS;
 
-#if defined(SUPPORT_AUTOMATION_EVENTS)
     if (fileName == NULL) TRACELOG(LOG_INFO, "AUTOMATION: New empty events list loaded successfully");
     else
     {
@@ -3015,34 +3154,38 @@ AutomationEventList LoadAutomationEventList(const char *fileName)
         if (raeFile != NULL)
         {
             unsigned int counter = 0;
+            unsigned int declaredCount = 0;
             char buffer[256] = { 0 };
-            char eventDesc[64] = { 0 };
 
-            fgets(buffer, 256, raeFile);
-
-            while (!feof(raeFile))
+            while (fgets(buffer, sizeof(buffer), raeFile) != NULL)
             {
                 switch (buffer[0])
                 {
-                    case 'c': sscanf(buffer, "c %i", &list.count); break;
+                    case 'c':
+                    {
+                        if (sscanf(buffer, "c %u", &declaredCount) != 1) declaredCount = 0;
+                    } break;
                     case 'e':
                     {
-                        sscanf(buffer, "e %d %d %d %d %d %d %[^\n]s", &list.events[counter].frame, &list.events[counter].type,
-                               &list.events[counter].params[0], &list.events[counter].params[1], &list.events[counter].params[2], &list.events[counter].params[3], eventDesc);
+                        if (counter >= list.capacity)
+                        {
+                            TRACELOG(LOG_WARNING, "AUTOMATION: Maximum event capacity reached (%u events)", list.capacity);
+                            break;
+                        }
 
-                        counter++;
+                        int parsed = sscanf(buffer, "e %u %u %d %d %d %d", &list.events[counter].frame, &list.events[counter].type,
+                            &list.events[counter].params[0], &list.events[counter].params[1], &list.events[counter].params[2], &list.events[counter].params[3]);
+                        if (parsed == 6) counter++;
                     } break;
                     default: break;
                 }
-
-                fgets(buffer, 256, raeFile);
             }
 
-            if (counter != list.count)
+            if (counter != declaredCount)
             {
-                TRACELOG(LOG_WARNING, "AUTOMATION: Events read from file [%i] do not mach event count specified [%i]", counter, list.count);
-                list.count = counter;
+                TRACELOG(LOG_WARNING, "AUTOMATION: Events read from file [%u] do not match event count specified [%u]", counter, declaredCount);
             }
+            list.count = counter;
 
             fclose(raeFile);
 
@@ -3058,17 +3201,34 @@ AutomationEventList LoadAutomationEventList(const char *fileName)
 // Unload automation events list from file
 void UnloadAutomationEventList(AutomationEventList list)
 {
-#if defined(SUPPORT_AUTOMATION_EVENTS)
     RL_FREE(list.events);
-#endif
 }
 
 // Export automation events list as text file
 bool ExportAutomationEventList(AutomationEventList list, const char *fileName)
 {
+    (void)list;
+    (void)fileName;
     bool success = false;
 
 #if defined(SUPPORT_AUTOMATION_EVENTS)
+    if ((fileName == NULL) || (fileName[0] == '\0') || (list.count > list.capacity) ||
+        ((list.count > 0) && (list.events == NULL)) ||
+        (list.count > (SIZE_MAX - 2048)/256))
+    {
+        TRACELOG(LOG_WARNING, "AUTOMATION: Invalid events list or output file");
+        return false;
+    }
+
+    for (unsigned int i = 0; i < list.count; i++)
+    {
+        if (list.events[i].type > ACTION_SETTARGETFPS)
+        {
+            TRACELOG(LOG_WARNING, "AUTOMATION: Invalid event type at index %u", i);
+            return false;
+        }
+    }
+
     // Export events as binary file
     // TODO: Save to memory buffer and SaveFileData()
     /*
@@ -3082,27 +3242,47 @@ bool ExportAutomationEventList(AutomationEventList list, const char *fileName)
 
     // Export events as text
     // TODO: Save to memory buffer and SaveFileText()
-    char *txtData = (char *)RL_CALLOC(256*list.count + 2048, sizeof(char)); // 256 characters per line plus some header
+    size_t textCapacity = (size_t)list.count*256 + 2048; // 256 characters per line plus some header
+    char *txtData = (char *)RL_CALLOC(textCapacity, sizeof(char));
+    if (txtData == NULL)
+    {
+        TRACELOG(LOG_WARNING, "AUTOMATION: Failed to allocate export buffer");
+        return false;
+    }
 
-    int byteCount = 0;
-    byteCount += sprintf(txtData + byteCount, "#\n");
-    byteCount += sprintf(txtData + byteCount, "# Automation events exporter v1.0 - raylib automation events list\n");
-    byteCount += sprintf(txtData + byteCount, "#\n");
-    byteCount += sprintf(txtData + byteCount, "#    c <events_count>\n");
-    byteCount += sprintf(txtData + byteCount, "#    e <frame> <event_type> <param0> <param1> <param2> <param3> // <event_type_name>\n");
-    byteCount += sprintf(txtData + byteCount, "#\n");
-    byteCount += sprintf(txtData + byteCount, "# more info and bugs-report:  github.com/raysan5/raylib\n");
-    byteCount += sprintf(txtData + byteCount, "# feedback and support:       ray[at]raylib.com\n");
-    byteCount += sprintf(txtData + byteCount, "#\n");
-    byteCount += sprintf(txtData + byteCount, "# Copyright (c) 2023-2024 Ramon Santamaria (@raysan5)\n");
-    byteCount += sprintf(txtData + byteCount, "#\n\n");
+    size_t byteCount = 0;
+    int written = snprintf(txtData, textCapacity,
+        "#\n"
+        "# Automation events exporter v1.0 - raylib automation events list\n"
+        "#\n"
+        "#    c <events_count>\n"
+        "#    e <frame> <event_type> <param0> <param1> <param2> <param3> // <event_type_name>\n"
+        "#\n"
+        "# more info and bugs-report:  github.com/raysan5/raylib\n"
+        "# feedback and support:       ray[at]raylib.com\n"
+        "#\n"
+        "# Copyright (c) 2023-2024 Ramon Santamaria (@raysan5)\n"
+        "#\n\n"
+        "c %u\n", list.count);
+    if ((written < 0) || ((size_t)written >= textCapacity))
+    {
+        RL_FREE(txtData);
+        return false;
+    }
+    byteCount = (size_t)written;
 
     // Add events data
-    byteCount += sprintf(txtData + byteCount, "c %i\n", list.count);
     for (unsigned int i = 0; i < list.count; i++)
     {
-        byteCount += snprintf(txtData + byteCount, 256, "e %i %i %i %i %i %i // Event: %s\n", list.events[i].frame, list.events[i].type,
+        written = snprintf(txtData + byteCount, textCapacity - byteCount, "e %u %u %i %i %i %i // Event: %s\n", list.events[i].frame, list.events[i].type,
             list.events[i].params[0], list.events[i].params[1], list.events[i].params[2], list.events[i].params[3], autoEventTypeName[list.events[i].type]);
+        if ((written < 0) || ((size_t)written >= (textCapacity - byteCount)))
+        {
+            TRACELOG(LOG_WARNING, "AUTOMATION: Event export buffer exhausted");
+            RL_FREE(txtData);
+            return false;
+        }
+        byteCount += (size_t)written;
     }
 
     // NOTE: Text data size exported is determined by '\0' (NULL) character
@@ -3117,8 +3297,15 @@ bool ExportAutomationEventList(AutomationEventList list, const char *fileName)
 // Setup automation event list to record to
 void SetAutomationEventList(AutomationEventList *list)
 {
+    (void)list;
 #if defined(SUPPORT_AUTOMATION_EVENTS)
-    currentEventList = list;
+    if ((list != NULL) && (list->events != NULL) && (list->count <= list->capacity)) currentEventList = list;
+    else
+    {
+        currentEventList = NULL;
+        automationEventRecording = false;
+        TRACELOG(LOG_WARNING, "AUTOMATION: Invalid event list");
+    }
 #endif
 }
 
@@ -3132,7 +3319,8 @@ void SetAutomationEventBaseFrame(int frame)
 void StartAutomationEventRecording(void)
 {
 #if defined(SUPPORT_AUTOMATION_EVENTS)
-    automationEventRecording = true;
+    if ((currentEventList != NULL) && (currentEventList->events != NULL) && (currentEventList->count <= currentEventList->capacity)) automationEventRecording = true;
+    else TRACELOG(LOG_WARNING, "AUTOMATION: Event recording requires a valid event list");
 #endif
 }
 
@@ -3147,6 +3335,7 @@ void StopAutomationEventRecording(void)
 // Play a recorded automation event
 void PlayAutomationEvent(AutomationEvent event)
 {
+    (void)event;
 #if defined(SUPPORT_AUTOMATION_EVENTS)
     // WARNING: When should event be played? After/before/replace PollInputEvents()? -> Up to the user!
 
@@ -3155,8 +3344,12 @@ void PlayAutomationEvent(AutomationEvent event)
         switch (event.type)
         {
             // Input event
-            case INPUT_KEY_UP: CORE.Input.Keyboard.currentKeyState[event.params[0]] = false; break;             // param[0]: key
+            case INPUT_KEY_UP:
+            {
+                if ((event.params[0] >= 0) && (event.params[0] < MAX_KEYBOARD_KEYS)) CORE.Input.Keyboard.currentKeyState[event.params[0]] = false;
+            } break;
             case INPUT_KEY_DOWN: {                                                                              // param[0]: key
+                if ((event.params[0] < 0) || (event.params[0] >= MAX_KEYBOARD_KEYS)) break;
                 CORE.Input.Keyboard.currentKeyState[event.params[0]] = true;
 
                 if (CORE.Input.Keyboard.previousKeyState[event.params[0]] == false)
@@ -3169,8 +3362,14 @@ void PlayAutomationEvent(AutomationEvent event)
                     }
                 }
             } break;
-            case INPUT_MOUSE_BUTTON_UP: CORE.Input.Mouse.currentButtonState[event.params[0]] = false; break;    // param[0]: key
-            case INPUT_MOUSE_BUTTON_DOWN: CORE.Input.Mouse.currentButtonState[event.params[0]] = true; break;   // param[0]: key
+            case INPUT_MOUSE_BUTTON_UP:
+            {
+                if ((event.params[0] >= 0) && (event.params[0] < MAX_MOUSE_BUTTONS)) CORE.Input.Mouse.currentButtonState[event.params[0]] = false;
+            } break;
+            case INPUT_MOUSE_BUTTON_DOWN:
+            {
+                if ((event.params[0] >= 0) && (event.params[0] < MAX_MOUSE_BUTTONS)) CORE.Input.Mouse.currentButtonState[event.params[0]] = true;
+            } break;
             case INPUT_MOUSE_POSITION:      // param[0]: x, param[1]: y
             {
                 CORE.Input.Mouse.currentPosition.x = (float)event.params[0];
@@ -3181,20 +3380,46 @@ void PlayAutomationEvent(AutomationEvent event)
                 CORE.Input.Mouse.currentWheelMove.x = (float)event.params[0];
                 CORE.Input.Mouse.currentWheelMove.y = (float)event.params[1];
             } break;
-            case INPUT_TOUCH_UP: CORE.Input.Touch.currentTouchState[event.params[0]] = false; break;            // param[0]: id
-            case INPUT_TOUCH_DOWN: CORE.Input.Touch.currentTouchState[event.params[0]] = true; break;           // param[0]: id
+            case INPUT_TOUCH_UP:
+            {
+                if ((event.params[0] >= 0) && (event.params[0] < MAX_TOUCH_POINTS)) CORE.Input.Touch.currentTouchState[event.params[0]] = false;
+            } break;
+            case INPUT_TOUCH_DOWN:
+            {
+                if ((event.params[0] >= 0) && (event.params[0] < MAX_TOUCH_POINTS)) CORE.Input.Touch.currentTouchState[event.params[0]] = true;
+            } break;
             case INPUT_TOUCH_POSITION:      // param[0]: id, param[1]: x, param[2]: y
             {
-                CORE.Input.Touch.position[event.params[0]].x = (float)event.params[1];
-                CORE.Input.Touch.position[event.params[0]].y = (float)event.params[2];
+                if ((event.params[0] >= 0) && (event.params[0] < MAX_TOUCH_POINTS))
+                {
+                    CORE.Input.Touch.position[event.params[0]].x = (float)event.params[1];
+                    CORE.Input.Touch.position[event.params[0]].y = (float)event.params[2];
+                }
             } break;
-            case INPUT_GAMEPAD_CONNECT: CORE.Input.Gamepad.ready[event.params[0]] = true; break;                // param[0]: gamepad
-            case INPUT_GAMEPAD_DISCONNECT: CORE.Input.Gamepad.ready[event.params[0]] = false; break;            // param[0]: gamepad
-            case INPUT_GAMEPAD_BUTTON_UP: CORE.Input.Gamepad.currentButtonState[event.params[0]][event.params[1]] = false; break;    // param[0]: gamepad, param[1]: button
-            case INPUT_GAMEPAD_BUTTON_DOWN: CORE.Input.Gamepad.currentButtonState[event.params[0]][event.params[1]] = true; break;   // param[0]: gamepad, param[1]: button
+            case INPUT_GAMEPAD_CONNECT:
+            {
+                if ((event.params[0] >= 0) && (event.params[0] < MAX_GAMEPADS)) CORE.Input.Gamepad.ready[event.params[0]] = true;
+            } break;
+            case INPUT_GAMEPAD_DISCONNECT:
+            {
+                if ((event.params[0] >= 0) && (event.params[0] < MAX_GAMEPADS)) CORE.Input.Gamepad.ready[event.params[0]] = false;
+            } break;
+            case INPUT_GAMEPAD_BUTTON_UP:
+            case INPUT_GAMEPAD_BUTTON_DOWN:
+            {
+                if ((event.params[0] >= 0) && (event.params[0] < MAX_GAMEPADS) &&
+                    (event.params[1] >= 0) && (event.params[1] < MAX_GAMEPAD_BUTTONS))
+                {
+                    CORE.Input.Gamepad.currentButtonState[event.params[0]][event.params[1]] = (event.type == INPUT_GAMEPAD_BUTTON_DOWN);
+                }
+            } break;
             case INPUT_GAMEPAD_AXIS_MOTION: // param[0]: gamepad, param[1]: axis, param[2]: delta
             {
-                CORE.Input.Gamepad.axisState[event.params[0]][event.params[1]] = ((float)event.params[2]/32768.0f);
+                if ((event.params[0] >= 0) && (event.params[0] < MAX_GAMEPADS) &&
+                    (event.params[1] >= 0) && (event.params[1] < MAX_GAMEPAD_AXIS))
+                {
+                    CORE.Input.Gamepad.axisState[event.params[0]][event.params[1]] = (float)event.params[2]*(1.0f/32768.0f);
+                }
             } break;
     #if defined(SUPPORT_GESTURES_SYSTEM)
             case INPUT_GESTURE: GESTURES.current = event.params[0]; break;     // param[0]: gesture (enum Gesture) -> rgestures.h: GESTURES.current
@@ -3355,7 +3580,7 @@ bool IsGamepadAvailable(int gamepad)
 {
     bool result = false;
 
-    if ((gamepad < MAX_GAMEPADS) && CORE.Input.Gamepad.ready[gamepad]) result = true;
+    if ((gamepad >= 0) && (gamepad < MAX_GAMEPADS) && CORE.Input.Gamepad.ready[gamepad]) result = true;
 
     return result;
 }
@@ -3363,7 +3588,7 @@ bool IsGamepadAvailable(int gamepad)
 // Get gamepad internal name id
 const char *GetGamepadName(int gamepad)
 {
-    return CORE.Input.Gamepad.name[gamepad];
+    return ((gamepad >= 0) && (gamepad < MAX_GAMEPADS) && CORE.Input.Gamepad.ready[gamepad])? CORE.Input.Gamepad.name[gamepad] : NULL;
 }
 
 // Check if a gamepad button has been pressed once
@@ -3371,7 +3596,7 @@ bool IsGamepadButtonPressed(int gamepad, int button)
 {
     bool pressed = false;
 
-    if ((gamepad < MAX_GAMEPADS) && CORE.Input.Gamepad.ready[gamepad] && (button < MAX_GAMEPAD_BUTTONS) &&
+    if ((gamepad >= 0) && (gamepad < MAX_GAMEPADS) && CORE.Input.Gamepad.ready[gamepad] && (button >= 0) && (button < MAX_GAMEPAD_BUTTONS) &&
         (CORE.Input.Gamepad.previousButtonState[gamepad][button] == 0) && (CORE.Input.Gamepad.currentButtonState[gamepad][button] == 1)) pressed = true;
 
     return pressed;
@@ -3382,7 +3607,7 @@ bool IsGamepadButtonDown(int gamepad, int button)
 {
     bool down = false;
 
-    if ((gamepad < MAX_GAMEPADS) && CORE.Input.Gamepad.ready[gamepad] && (button < MAX_GAMEPAD_BUTTONS) &&
+    if ((gamepad >= 0) && (gamepad < MAX_GAMEPADS) && CORE.Input.Gamepad.ready[gamepad] && (button >= 0) && (button < MAX_GAMEPAD_BUTTONS) &&
         (CORE.Input.Gamepad.currentButtonState[gamepad][button] == 1)) down = true;
 
     return down;
@@ -3393,7 +3618,7 @@ bool IsGamepadButtonReleased(int gamepad, int button)
 {
     bool released = false;
 
-    if ((gamepad < MAX_GAMEPADS) && CORE.Input.Gamepad.ready[gamepad] && (button < MAX_GAMEPAD_BUTTONS) &&
+    if ((gamepad >= 0) && (gamepad < MAX_GAMEPADS) && CORE.Input.Gamepad.ready[gamepad] && (button >= 0) && (button < MAX_GAMEPAD_BUTTONS) &&
         (CORE.Input.Gamepad.previousButtonState[gamepad][button] == 1) && (CORE.Input.Gamepad.currentButtonState[gamepad][button] == 0)) released = true;
 
     return released;
@@ -3404,7 +3629,7 @@ bool IsGamepadButtonUp(int gamepad, int button)
 {
     bool up = false;
 
-    if ((gamepad < MAX_GAMEPADS) && CORE.Input.Gamepad.ready[gamepad] && (button < MAX_GAMEPAD_BUTTONS) &&
+    if ((gamepad >= 0) && (gamepad < MAX_GAMEPADS) && CORE.Input.Gamepad.ready[gamepad] && (button >= 0) && (button < MAX_GAMEPAD_BUTTONS) &&
         (CORE.Input.Gamepad.currentButtonState[gamepad][button] == 0)) up = true;
 
     return up;
@@ -3419,7 +3644,7 @@ int GetGamepadButtonPressed(void)
 // Get gamepad axis count
 int GetGamepadAxisCount(int gamepad)
 {
-    return CORE.Input.Gamepad.axisCount[gamepad];
+    return ((gamepad >= 0) && (gamepad < MAX_GAMEPADS) && CORE.Input.Gamepad.ready[gamepad])? CORE.Input.Gamepad.axisCount[gamepad] : 0;
 }
 
 // Get axis movement vector for a gamepad
@@ -3427,7 +3652,7 @@ float GetGamepadAxisMovement(int gamepad, int axis)
 {
     float value = (axis == GAMEPAD_AXIS_LEFT_TRIGGER || axis == GAMEPAD_AXIS_RIGHT_TRIGGER)? -1.0f : 0.0f;
 
-    if ((gamepad < MAX_GAMEPADS) && CORE.Input.Gamepad.ready[gamepad] && (axis < MAX_GAMEPAD_AXIS)) {
+    if ((gamepad >= 0) && (gamepad < MAX_GAMEPADS) && CORE.Input.Gamepad.ready[gamepad] && (axis >= 0) && (axis < MAX_GAMEPAD_AXIS)) {
         float movement = value < 0.0f ? CORE.Input.Gamepad.axisState[gamepad][axis] : fabsf(CORE.Input.Gamepad.axisState[gamepad][axis]);
 
         if (movement > value) value = CORE.Input.Gamepad.axisState[gamepad][axis];
@@ -3449,6 +3674,8 @@ bool IsMouseButtonPressed(int button)
 {
     bool pressed = false;
 
+    if ((button < 0) || (button >= MAX_MOUSE_BUTTONS)) return false;
+
     if ((CORE.Input.Mouse.currentButtonState[button] == 1) && (CORE.Input.Mouse.previousButtonState[button] == 0)) pressed = true;
 
     // Map touches to mouse buttons checking
@@ -3461,6 +3688,8 @@ bool IsMouseButtonPressed(int button)
 bool IsMouseButtonDown(int button)
 {
     bool down = false;
+
+    if ((button < 0) || (button >= MAX_MOUSE_BUTTONS)) return false;
 
     if (CORE.Input.Mouse.currentButtonState[button] == 1) down = true;
 
@@ -3475,6 +3704,8 @@ bool IsMouseButtonReleased(int button)
 {
     bool released = false;
 
+    if ((button < 0) || (button >= MAX_MOUSE_BUTTONS)) return false;
+
     if ((CORE.Input.Mouse.currentButtonState[button] == 0) && (CORE.Input.Mouse.previousButtonState[button] == 1)) released = true;
 
     // Map touches to mouse buttons checking
@@ -3487,6 +3718,8 @@ bool IsMouseButtonReleased(int button)
 bool IsMouseButtonUp(int button)
 {
     bool up = false;
+
+    if ((button < 0) || (button >= MAX_MOUSE_BUTTONS)) return false;
 
     if (CORE.Input.Mouse.currentButtonState[button] == 0) up = true;
 
@@ -3591,7 +3824,7 @@ Vector2 GetTouchPosition(int index)
 {
     Vector2 position = { -1.0f, -1.0f };
 
-    if (index < MAX_TOUCH_POINTS) position = CORE.Input.Touch.position[index];
+    if ((index >= 0) && (index < MAX_TOUCH_POINTS)) position = CORE.Input.Touch.position[index];
     else TRACELOG(LOG_WARNING, "INPUT: Required touch point out of range (Max touch points: %i)", MAX_TOUCH_POINTS);
 
     return position;
@@ -3602,7 +3835,7 @@ int GetTouchPointId(int index)
 {
     int id = -1;
 
-    if (index < MAX_TOUCH_POINTS) id = CORE.Input.Touch.pointId[index];
+    if ((index >= 0) && (index < MAX_TOUCH_POINTS)) id = CORE.Input.Touch.pointId[index];
 
     return id;
 }
@@ -3686,6 +3919,8 @@ void SetupViewport(int width, int height)
 // NOTE: Global variables CORE.Window.render.width/CORE.Window.render.height and CORE.Window.renderOffset.x/CORE.Window.renderOffset.y can be modified
 void SetupFramebuffer(int width, int height)
 {
+    (void)width;
+    (void)height;
     // Calculate CORE.Window.render.width and CORE.Window.render.height, we have the display size (input params) and the desired screen size (global var)
     if ((CORE.Window.screen.width > CORE.Window.display.width) || (CORE.Window.screen.height > CORE.Window.display.height))
     {
@@ -3760,14 +3995,59 @@ void SetupFramebuffer(int width, int height)
     }
 }
 
+// Append one path using exact-size storage. Pointer capacity grows geometrically,
+// but never beyond the configured public scan limit.
+static bool AppendDirectoryPath(FilePathList *files, const char *path)
+{
+    if ((files == NULL) || (path == NULL)) return false;
+
+    size_t pathLength = strlen(path);
+    if (pathLength >= MAX_FILEPATH_LENGTH)
+    {
+        TRACELOG(LOG_WARNING, "FILEIO: File path is too long, entry skipped");
+        return false;
+    }
+
+    if (files->count >= MAX_FILEPATH_CAPACITY)
+    {
+        TRACELOG(LOG_WARNING, "FILEIO: Maximum filepath scan capacity reached (%i files)", MAX_FILEPATH_CAPACITY);
+        return false;
+    }
+
+    if (files->count == files->capacity)
+    {
+        unsigned int newCapacity = (files->capacity == 0)? 32 : files->capacity*2;
+        if (newCapacity > MAX_FILEPATH_CAPACITY) newCapacity = MAX_FILEPATH_CAPACITY;
+
+        char **newPaths = (char **)RL_REALLOC(files->paths, newCapacity*sizeof(char *));
+        if (newPaths == NULL)
+        {
+            TRACELOG(LOG_WARNING, "FILEIO: Failed to grow filepath list");
+            return false;
+        }
+
+        memset(newPaths + files->capacity, 0, (newCapacity - files->capacity)*sizeof(char *));
+        files->paths = newPaths;
+        files->capacity = newCapacity;
+    }
+
+    char *pathCopy = (char *)RL_MALLOC(pathLength + 1);
+    if (pathCopy == NULL)
+    {
+        TRACELOG(LOG_WARNING, "FILEIO: Failed to allocate filepath");
+        return false;
+    }
+
+    memcpy(pathCopy, path, pathLength + 1);
+    files->paths[files->count++] = pathCopy;
+    return true;
+}
+
 // Scan all files and directories in a base path
-// WARNING: files.paths[] must be previously allocated and
-// contain enough space to store all required paths
 static void ScanDirectoryFiles(const char *basePath, FilePathList *files, const char *filter)
 {
-    static char path[MAX_FILEPATH_LENGTH] = { 0 };
-    memset(path, 0, MAX_FILEPATH_LENGTH);
 #if !defined(PLATFORM_VITA) && !defined(PLATFORM_ORBIS) && !defined(PLATFORM_PROSPERO) && !defined(PLATFORM_NINTENDO64)
+    char path[MAX_FILEPATH_LENGTH] = { 0 };
     struct dirent *dp = NULL;
     DIR *dir = opendir(basePath);
 
@@ -3775,40 +4055,27 @@ static void ScanDirectoryFiles(const char *basePath, FilePathList *files, const 
     {
         while ((dp = readdir(dir)) != NULL)
         {
-            if ((strcmp(dp->d_name, ".") != 0) &&
-                (strcmp(dp->d_name, "..") != 0))
-            {
-            #if defined(_WIN32)
-                sprintf(path, "%s\\%s", basePath, dp->d_name);
-            #else
-                sprintf(path, "%s/%s", basePath, dp->d_name);
-            #endif
+            if ((strcmp(dp->d_name, ".") == 0) || (strcmp(dp->d_name, "..") == 0)) continue;
 
-                if (filter != NULL)
-                {
-                    if (IsPathFile(path))
-                    {
-                        if (IsFileExtension(path, filter))
-                        {
-                            strcpy(files->paths[files->count], path);
-                            files->count++;
-                        }
-                    }
-                    else
-                    {
-                        if (TextFindIndex(filter, DIRECTORY_FILTER_TAG) >= 0)
-                        {
-                            strcpy(files->paths[files->count], path);
-                            files->count++;
-                        }
-                    }
-                }
-                else
-                {
-                    strcpy(files->paths[files->count], path);
-                    files->count++;
-                }
+        #if defined(_WIN32)
+            int pathLength = snprintf(path, sizeof(path), "%s\\%s", basePath, dp->d_name);
+        #else
+            int pathLength = snprintf(path, sizeof(path), "%s/%s", basePath, dp->d_name);
+        #endif
+            if ((pathLength < 0) || (pathLength >= (int)sizeof(path)))
+            {
+                TRACELOG(LOG_WARNING, "FILEIO: File path is too long, entry skipped");
+                continue;
             }
+
+            bool include = (filter == NULL);
+            if (filter != NULL)
+            {
+                if (IsPathFile(path)) include = IsFileExtension(path, filter);
+                else include = (TextFindIndex(filter, DIRECTORY_FILTER_TAG) >= 0);
+            }
+
+            if (include && !AppendDirectoryPath(files, path)) break;
         }
 
         closedir(dir);
@@ -3820,69 +4087,64 @@ static void ScanDirectoryFiles(const char *basePath, FilePathList *files, const 
 // Scan all files and directories recursively from a base path
 static void ScanDirectoryFilesRecursively(const char *basePath, FilePathList *files, const char *filter)
 {
-    char path[MAX_FILEPATH_LENGTH] = { 0 };
-    memset(path, 0, MAX_FILEPATH_LENGTH);
+    ScanDirectoryFilesRecursivelyDepth(basePath, files, filter, 0);
+}
+
+// Bounded recursive worker. The limit prevents directory cycles or unusually deep trees
+// from exhausting the small console stack while preserving normal directory layouts.
+static void ScanDirectoryFilesRecursivelyDepth(const char *basePath, FilePathList *files, const char *filter, unsigned int depth)
+{
 #if !defined(PLATFORM_VITA) && !defined(PLATFORM_ORBIS) && !defined(PLATFORM_PROSPERO) && !defined(PLATFORM_NINTENDO64)
+    #define MAX_DIRECTORY_SCAN_DEPTH  64
+    if (depth >= MAX_DIRECTORY_SCAN_DEPTH)
+    {
+        TRACELOG(LOG_WARNING, "FILEIO: Maximum directory scan depth reached (%u)", MAX_DIRECTORY_SCAN_DEPTH);
+        return;
+    }
+
+    char *path = (char *)RL_CALLOC(MAX_FILEPATH_LENGTH, 1);
+    if (path == NULL)
+    {
+        TRACELOG(LOG_WARNING, "FILEIO: Failed to allocate recursive scan path");
+        return;
+    }
+
     struct dirent *dp = NULL;
     DIR *dir = opendir(basePath);
 
     if (dir != NULL)
     {
-        while (((dp = readdir(dir)) != NULL) && (files->count < files->capacity))
+        while (((dp = readdir(dir)) != NULL) && (files->count < MAX_FILEPATH_CAPACITY))
         {
-            if ((strcmp(dp->d_name, ".") != 0) && (strcmp(dp->d_name, "..") != 0))
+            if ((strcmp(dp->d_name, ".") == 0) || (strcmp(dp->d_name, "..") == 0)) continue;
+
+        #if defined(_WIN32)
+            int pathLength = snprintf(path, MAX_FILEPATH_LENGTH, "%s\\%s", basePath, dp->d_name);
+        #else
+            int pathLength = snprintf(path, MAX_FILEPATH_LENGTH, "%s/%s", basePath, dp->d_name);
+        #endif
+            if ((pathLength < 0) || (pathLength >= MAX_FILEPATH_LENGTH))
             {
-                // Construct new path from our base path
-            #if defined(_WIN32)
-                sprintf(path, "%s\\%s", basePath, dp->d_name);
-            #else
-                sprintf(path, "%s/%s", basePath, dp->d_name);
-            #endif
+                TRACELOG(LOG_WARNING, "FILEIO: File path is too long, entry skipped");
+                continue;
+            }
 
-                if (IsPathFile(path))
-                {
-                    if (filter != NULL)
-                    {
-                        if (IsFileExtension(path, filter))
-                        {
-                            strcpy(files->paths[files->count], path);
-                            files->count++;
-                        }
-                    }
-                    else
-                    {
-                        strcpy(files->paths[files->count], path);
-                        files->count++;
-                    }
-
-                    if (files->count >= files->capacity)
-                    {
-                        TRACELOG(LOG_WARNING, "FILEIO: Maximum filepath scan capacity reached (%i files)", files->capacity);
-                        break;
-                    }
-                }
-                else
-                {
-                    if ((filter != NULL) && (TextFindIndex(filter, DIRECTORY_FILTER_TAG) >= 0))
-                    {
-                        strcpy(files->paths[files->count], path);
-                        files->count++;
-                    }
-
-                    if (files->count >= files->capacity)
-                    {
-                        TRACELOG(LOG_WARNING, "FILEIO: Maximum filepath scan capacity reached (%i files)", files->capacity);
-                        break;
-                    }
-
-                    ScanDirectoryFilesRecursively(path, files, filter);
-                }
+            if (IsPathFile(path))
+            {
+                if (((filter == NULL) || IsFileExtension(path, filter)) && !AppendDirectoryPath(files, path)) break;
+            }
+            else
+            {
+                if ((filter != NULL) && (TextFindIndex(filter, DIRECTORY_FILTER_TAG) >= 0) && !AppendDirectoryPath(files, path)) break;
+                if (files->count < MAX_FILEPATH_CAPACITY) ScanDirectoryFilesRecursivelyDepth(path, files, filter, depth + 1);
             }
         }
 
         closedir(dir);
     }
     else TRACELOG(LOG_WARNING, "FILEIO: Directory cannot be opened (%s)", basePath);
+    RL_FREE(path);
+    #undef MAX_DIRECTORY_SCAN_DEPTH
 #endif
 }
 
@@ -3894,7 +4156,8 @@ static void RecordAutomationEvent(void)
     // Checking events in current frame and save them into currentEventList
     // TODO: How important is the current frame? Could it be modified?
 
-    if (currentEventList->count == currentEventList->capacity) return;    // Security check
+    if ((currentEventList == NULL) || (currentEventList->events == NULL) ||
+        (currentEventList->count >= currentEventList->capacity)) return;    // Security check
 
     // Keyboard input events recording
     //-------------------------------------------------------------------------------------

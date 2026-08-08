@@ -833,6 +833,14 @@ RLAPI void rlLoadDrawQuad(void);     // Load and draw a quad
 
 #if defined(RLGL_IMPLEMENTATION)
 
+/* OpenGL 1.1 deliberately retains the modern rlgl signatures as compatibility
+ * stubs. Their parameters are part of the ABI even when that backend has no
+ * corresponding feature; keep -Wextra builds clean without emitting code. */
+#if defined(GRAPHICS_API_OPENGL_11) && (defined(__GNUC__) || defined(__clang__))
+    #pragma GCC diagnostic push
+    #pragma GCC diagnostic ignored "-Wunused-parameter"
+#endif
+
 // Expose OpenGL functions from glad in raylib
 #if defined(BUILD_LIBTYPE_SHARED)
     #define GLAD_API_CALL_EXPORT
@@ -1165,15 +1173,17 @@ static const char *rlGetCompressedFormatName(int format); // Get compressed form
 static int rlGetPixelDataSize(int width, int height, int format);   // Get pixel data size in bytes (image or texture)
 
 // Auxiliar matrix math functions
+#if defined(GRAPHICS_API_OPENGL_33) || defined(GRAPHICS_API_OPENGL_ES2)
 typedef struct rl_float16 {
     float v[16];
 } rl_float16;
 static rl_float16 rlMatrixToFloatV(Matrix mat);             // Get float array of matrix data
 #define rlMatrixToFloat(mat) (rlMatrixToFloatV(mat).v)      // Get float vector for Matrix
-static Matrix rlMatrixIdentity(void);                       // Get identity matrix
 static Matrix rlMatrixMultiply(Matrix left, Matrix right);  // Multiply two matrices
 static Matrix rlMatrixTranspose(Matrix mat);                // Transposes provided matrix
 static Matrix rlMatrixInvert(Matrix mat);                   // Invert provided matrix
+#endif
+static Matrix rlMatrixIdentity(void);                       // Get identity matrix
 
 //----------------------------------------------------------------------------------
 // Module Functions Definition - Matrix operations
@@ -1454,6 +1464,9 @@ void rlOrtho(double left, double right, double bottom, double top, double znear,
 // NOTE: We store current viewport dimensions
 void rlViewport(int x, int y, int width, int height)
 {
+#if defined(PLATFORM_DREAMCAST)
+    rlDcFlushOnStateChange();
+#endif
     glViewport(x, y, width, height);
 }
 
@@ -1507,7 +1520,8 @@ void rlEnd(void)
 void rlVertex2i(int x, int y)
 {
 #if defined(PLATFORM_DREAMCAST)
-    if (rlDcBatch.active) { rlDcAppendVertex((float)x, (float)y, 0.0f); return; }
+    if (__builtin_expect(rlDcBatch.active > 0, 1)) { rlDcAppendVertex((float)x, (float)y, 0.0f); return; }
+    if (rlDcBatch.active < 0) return;
 #endif
     glVertex2i(x, y);
 }
@@ -1515,7 +1529,8 @@ void rlVertex2i(int x, int y)
 void rlVertex2f(float x, float y)
 {
 #if defined(PLATFORM_DREAMCAST)
-    if (rlDcBatch.active) { rlDcAppendVertex(x, y, 0.0f); return; }
+    if (__builtin_expect(rlDcBatch.active > 0, 1)) { rlDcAppendVertex(x, y, 0.0f); return; }
+    if (rlDcBatch.active < 0) return;
 #endif
     glVertex2f(x, y);
 }
@@ -1523,7 +1538,8 @@ void rlVertex2f(float x, float y)
 void rlVertex3f(float x, float y, float z)
 {
 #if defined(PLATFORM_DREAMCAST)
-    if (rlDcBatch.active) { rlDcAppendVertex(x, y, z); return; }
+    if (__builtin_expect(rlDcBatch.active > 0, 1)) { rlDcAppendVertex(x, y, z); return; }
+    if (rlDcBatch.active < 0) return;
 #endif
     glVertex3f(x, y, z);
 }
@@ -1541,7 +1557,7 @@ void rlTexCoord2f(float x, float y)
 void rlNormal3f(float x, float y, float z)
 {
 #if defined(PLATFORM_DREAMCAST)
-    if (rlDcBatch.active) return;  // Normals skipped for 2D fast path
+    if (rlDcBatch.active) return;  // Compatibility no-op: preserve hot P+UV+BGRA lane
 #endif
     glNormal3f(x, y, z);
 }
@@ -1834,8 +1850,10 @@ void rlActiveTextureSlot(int slot)
 void rlEnableTexture(unsigned int id)
 {
 #if defined(PLATFORM_DREAMCAST)
-    rlDcFlushOnStateChange();
+    rlDcExternalTextureBarrier();
     rlDcBatch.textureId = id;
+    rlDcBatch.lastFlushedTexId = id;
+    rlDcBatch.lastFlushedTexValid = 1;
 #endif
 #if defined(GRAPHICS_API_OPENGL_11)
     glEnable(GL_TEXTURE_2D);
@@ -1847,8 +1865,10 @@ void rlEnableTexture(unsigned int id)
 void rlDisableTexture(void)
 {
 #if defined(PLATFORM_DREAMCAST)
-    rlDcFlushOnStateChange();
+    rlDcExternalTextureBarrier();
     rlDcBatch.textureId = 0;
+    rlDcBatch.lastFlushedTexId = 0;
+    rlDcBatch.lastFlushedTexValid = 1;
 #endif
 #if defined(GRAPHICS_API_OPENGL_11)
     glDisable(GL_TEXTURE_2D);
@@ -1875,6 +1895,17 @@ void rlDisableTextureCubemap(void)
 // Set texture parameters (wrap mode/filter mode)
 void rlTextureParameters(unsigned int id, int param, int value)
 {
+#if defined(PLATFORM_DREAMCAST)
+    /* These extension-only controls have no GLdc/PVR2 equivalent.  Reject
+     * before the ordering barrier and bind so an unsupported compatibility
+     * request has literally zero render-thread cost. */
+    if ((((param == RL_TEXTURE_WRAP_S) || (param == RL_TEXTURE_WRAP_T)) &&
+         (value == RL_TEXTURE_WRAP_MIRROR_CLAMP)) ||
+        (param == RL_TEXTURE_FILTER_ANISOTROPIC) ||
+        (param == RL_TEXTURE_MIPMAP_BIAS_RATIO)) return;
+
+    rlDcExternalStateBarrier();
+#endif
     glBindTexture(GL_TEXTURE_2D, id);
 
 #if !defined(GRAPHICS_API_OPENGL_11)
@@ -2142,9 +2173,13 @@ void rlDisableBackfaceCulling(void) {
 void rlColorMask(bool r, bool g, bool b, bool a)
 {
 #if defined(PLATFORM_DREAMCAST)
-    rlDcFlushOnStateChange();
-#endif
-#if defined(PLATFORM_NINTENDO64)
+    (void)r;
+    (void)g;
+    (void)b;
+    (void)a;
+    /* Compatibility no-op: GLdc's glColorMask() has no hardware effect.
+     * Avoid an otherwise needless batch flush and dirty-state call. */
+#elif defined(PLATFORM_NINTENDO64)
 #else
     glColorMask(r, g, b, a);
 #endif
@@ -2189,9 +2224,15 @@ void rlScissor(int x, int y, int width, int height) {
 }
 
 // Enable wire mode
+// Dreamcast intentionally has no barrier in the line/point-only controls
+// below: RL_LINES is captured as a discard and GLdc's glPolygonMode() is a
+// no-op. Flushing here would only fragment the
+// preceding triangle/quad batch without changing its rendered state.
 void rlEnableWireMode(void)
 {
-#if defined(GRAPHICS_API_OPENGL_11) || defined(GRAPHICS_API_OPENGL_33)
+#if defined(PLATFORM_DREAMCAST)
+    /* Compatibility no-op: PowerVR2/GLdc has no polygon raster mode. */
+#elif defined(GRAPHICS_API_OPENGL_11) || defined(GRAPHICS_API_OPENGL_33)
     // NOTE: glPolygonMode() not available on OpenGL ES
     glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
 #endif
@@ -2200,7 +2241,9 @@ void rlEnableWireMode(void)
 // Enable point mode
 void rlEnablePointMode(void)
 {
-#if defined(GRAPHICS_API_OPENGL_11) || defined(GRAPHICS_API_OPENGL_33)
+#if defined(PLATFORM_DREAMCAST)
+    /* Compatibility no-op: PowerVR2/GLdc has no polygon raster mode. */
+#elif defined(GRAPHICS_API_OPENGL_11) || defined(GRAPHICS_API_OPENGL_33)
     // NOTE: glPolygonMode() not available on OpenGL ES
     glPolygonMode(GL_FRONT_AND_BACK, GL_POINT);
     glEnable(GL_PROGRAM_POINT_SIZE);
@@ -2210,27 +2253,43 @@ void rlEnablePointMode(void)
 // Disable wire mode
 void rlDisableWireMode(void)
 {
-#if defined(GRAPHICS_API_OPENGL_11) || defined(GRAPHICS_API_OPENGL_33)
+#if defined(PLATFORM_DREAMCAST)
+    /* Compatibility no-op paired with rlEnableWireMode/rlEnablePointMode. */
+#elif defined(GRAPHICS_API_OPENGL_11) || defined(GRAPHICS_API_OPENGL_33)
     // NOTE: glPolygonMode() not available on OpenGL ES
     glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 #endif
 }
 
 // Set the line drawing width
-void rlSetLineWidth(float width) { glLineWidth(width); }
+void rlSetLineWidth(float width)
+{
+#if defined(PLATFORM_DREAMCAST)
+    rlDcBatch.lineWidth = width;
+#endif
+    glLineWidth(width);
+}
 
 // Get the line drawing width
 float rlGetLineWidth(void)
 {
+#if defined(PLATFORM_DREAMCAST)
+    /* GLdc implements glLineWidth() but does not expose GL_LINE_WIDTH through
+     * glGetFloatv(); mirror the write so this query stays exact and error-free. */
+    return rlDcBatch.lineWidth;
+#else
     float width = 0;
     glGetFloatv(GL_LINE_WIDTH, &width);
     return width;
+#endif
 }
 
 // Enable line aliasing
 void rlEnableSmoothLines(void)
 {
-#if defined(GRAPHICS_API_OPENGL_33) || defined(GRAPHICS_API_OPENGL_11)
+#if defined(PLATFORM_DREAMCAST)
+    /* Compatibility no-op: GLdc does not implement GL_LINE_SMOOTH. */
+#elif defined(GRAPHICS_API_OPENGL_33) || defined(GRAPHICS_API_OPENGL_11)
     glEnable(GL_LINE_SMOOTH);
 #endif
 }
@@ -2238,7 +2297,9 @@ void rlEnableSmoothLines(void)
 // Disable line aliasing
 void rlDisableSmoothLines(void)
 {
-#if defined(GRAPHICS_API_OPENGL_33) || defined(GRAPHICS_API_OPENGL_11)
+#if defined(PLATFORM_DREAMCAST)
+    /* Compatibility no-op paired with rlEnableSmoothLines(). */
+#elif defined(GRAPHICS_API_OPENGL_33) || defined(GRAPHICS_API_OPENGL_11)
     glDisable(GL_LINE_SMOOTH);
 #endif
 }
@@ -2294,7 +2355,7 @@ void rlClearScreenBuffers(void)
 // Check and log OpenGL error codes
 void rlCheckErrors(void)
 {
-#if defined(GRAPHICS_API_OPENGL_33) || defined(GRAPHICS_API_OPENGL_ES2)
+#if defined(PLATFORM_DREAMCAST) || defined(GRAPHICS_API_OPENGL_33) || defined(GRAPHICS_API_OPENGL_ES2)
     int check = 1;
     while (check)
     {
@@ -2318,7 +2379,11 @@ void rlCheckErrors(void)
 // Set blend mode
 void rlSetBlendMode(int mode)
 {
-#if defined(GRAPHICS_API_OPENGL_33) || defined(GRAPHICS_API_OPENGL_ES2)
+#if defined(PLATFORM_DREAMCAST)
+    /* Compatibility no-op. The Dreamcast renderer owns native PVR blending;
+     * changing it here would break callers that bracket draws portably. */
+    (void)mode;
+#elif defined(GRAPHICS_API_OPENGL_33) || defined(GRAPHICS_API_OPENGL_ES2)
     if ((RLGL.State.currentBlendMode != mode) || ((mode == RL_BLEND_CUSTOM || mode == RL_BLEND_CUSTOM_SEPARATE) && RLGL.State.glCustomBlendModeModified))
     {
         rlDrawRenderBatch(RLGL.currentBatch);
@@ -2356,7 +2421,11 @@ void rlSetBlendMode(int mode)
 // Set blending mode factor and equation
 void rlSetBlendFactors(int glSrcFactor, int glDstFactor, int glEquation)
 {
-#if defined(GRAPHICS_API_OPENGL_33) || defined(GRAPHICS_API_OPENGL_ES2)
+#if defined(PLATFORM_DREAMCAST)
+    (void)glSrcFactor;
+    (void)glDstFactor;
+    (void)glEquation;
+#elif defined(GRAPHICS_API_OPENGL_33) || defined(GRAPHICS_API_OPENGL_ES2)
     if ((RLGL.State.glBlendSrcFactor != glSrcFactor) ||
         (RLGL.State.glBlendDstFactor != glDstFactor) ||
         (RLGL.State.glBlendEquation != glEquation))
@@ -2373,7 +2442,14 @@ void rlSetBlendFactors(int glSrcFactor, int glDstFactor, int glEquation)
 // Set blending mode factor and equation separately for RGB and alpha
 void rlSetBlendFactorsSeparate(int glSrcRGB, int glDstRGB, int glSrcAlpha, int glDstAlpha, int glEqRGB, int glEqAlpha)
 {
-#if defined(GRAPHICS_API_OPENGL_33) || defined(GRAPHICS_API_OPENGL_ES2)
+#if defined(PLATFORM_DREAMCAST)
+    (void)glSrcRGB;
+    (void)glDstRGB;
+    (void)glSrcAlpha;
+    (void)glDstAlpha;
+    (void)glEqRGB;
+    (void)glEqAlpha;
+#elif defined(GRAPHICS_API_OPENGL_33) || defined(GRAPHICS_API_OPENGL_ES2)
     if ((RLGL.State.glBlendSrcFactorRGB != glSrcRGB) ||
         (RLGL.State.glBlendDestFactorRGB != glDstRGB) ||
         (RLGL.State.glBlendSrcFactorAlpha != glSrcAlpha) ||
@@ -2460,6 +2536,11 @@ static void GLAPIENTRY rlDebugMessageCallback(GLenum source, GLenum type, GLuint
 // Initialize rlgl: OpenGL extensions, default buffers/shaders/textures, OpenGL states
 void rlglInit(int width, int height)
 {
+#if defined(PLATFORM_DREAMCAST)
+    rlDcResetState();
+    rlDcBatch.framebufferWidth = width;
+    rlDcBatch.framebufferHeight = height;
+#endif
     // Enable OpenGL debug context if required
 #if defined(RLGL_ENABLE_OPENGL_DEBUG_CONTEXT) && defined(GRAPHICS_API_OPENGL_43)
     if ((glDebugMessageCallback != NULL) && (glDebugMessageControl != NULL))
@@ -2559,6 +2640,10 @@ void rlglInit(int width, int height)
 // Vertex Buffer Object deinitialization (memory free)
 void rlglClose(void)
 {
+#if defined(PLATFORM_DREAMCAST)
+    rlDcFlushAll();
+    rlDcResetState();
+#endif
 #if defined(GRAPHICS_API_OPENGL_33) || defined(GRAPHICS_API_OPENGL_ES2)
     rlUnloadRenderBatch(RLGL.defaultBatch);
 
@@ -2886,7 +2971,9 @@ int rlGetVersion(void)
 // Set current framebuffer width
 void rlSetFramebufferWidth(int width)
 {
-#if defined(GRAPHICS_API_OPENGL_33) || defined(GRAPHICS_API_OPENGL_ES2)
+#if defined(PLATFORM_DREAMCAST)
+    rlDcBatch.framebufferWidth = width;
+#elif defined(GRAPHICS_API_OPENGL_33) || defined(GRAPHICS_API_OPENGL_ES2)
     RLGL.State.framebufferWidth = width;
 #endif
 }
@@ -2894,7 +2981,9 @@ void rlSetFramebufferWidth(int width)
 // Set current framebuffer height
 void rlSetFramebufferHeight(int height)
 {
-#if defined(GRAPHICS_API_OPENGL_33) || defined(GRAPHICS_API_OPENGL_ES2)
+#if defined(PLATFORM_DREAMCAST)
+    rlDcBatch.framebufferHeight = height;
+#elif defined(GRAPHICS_API_OPENGL_33) || defined(GRAPHICS_API_OPENGL_ES2)
     RLGL.State.framebufferHeight = height;
 #endif
 }
@@ -2903,7 +2992,9 @@ void rlSetFramebufferHeight(int height)
 int rlGetFramebufferWidth(void)
 {
     int width = 0;
-#if defined(GRAPHICS_API_OPENGL_33) || defined(GRAPHICS_API_OPENGL_ES2)
+#if defined(PLATFORM_DREAMCAST)
+    width = rlDcBatch.framebufferWidth;
+#elif defined(GRAPHICS_API_OPENGL_33) || defined(GRAPHICS_API_OPENGL_ES2)
     width = RLGL.State.framebufferWidth;
 #endif
     return width;
@@ -2913,7 +3004,9 @@ int rlGetFramebufferWidth(void)
 int rlGetFramebufferHeight(void)
 {
     int height = 0;
-#if defined(GRAPHICS_API_OPENGL_33) || defined(GRAPHICS_API_OPENGL_ES2)
+#if defined(PLATFORM_DREAMCAST)
+    height = rlDcBatch.framebufferHeight;
+#elif defined(GRAPHICS_API_OPENGL_33) || defined(GRAPHICS_API_OPENGL_ES2)
     height = RLGL.State.framebufferHeight;
 #endif
     return height;
@@ -3440,6 +3533,9 @@ unsigned int rlLoadTexture(const void *data, int width, int height, int format, 
 {
     unsigned int id = 0;
 
+#if defined(PLATFORM_DREAMCAST)
+    rlDcExternalStateBarrier();
+#endif
     glBindTexture(GL_TEXTURE_2D, 0);    // Free any old binding
 
     // Check texture format support by OpenGL 1.1 (compressed textures not supported)
@@ -3751,6 +3847,9 @@ unsigned int rlLoadTextureCubemap(const void *data, int size, int format, int mi
 // NOTE: We don't know safely if internal texture format is the expected one...
 void rlUpdateTexture(unsigned int id, int offsetX, int offsetY, int width, int height, int format, const void *data)
 {
+#if defined(PLATFORM_DREAMCAST)
+    rlDcExternalStateBarrier();
+#endif
     glBindTexture(GL_TEXTURE_2D, id);
 
     unsigned int glInternalFormat, glFormat, glType;
@@ -3842,6 +3941,10 @@ void rlGetGlTextureFormats(int format, unsigned int *glInternalFormat, unsigned 
 // Unload texture from GPU memory
 void rlUnloadTexture(unsigned int id)
 {
+#if defined(PLATFORM_DREAMCAST)
+    rlDcExternalStateBarrier();
+    if (rlDcBatch.textureId == id) rlDcBatch.textureId = 0;
+#endif
     glDeleteTextures(1, &id);
 }
 
@@ -3849,6 +3952,9 @@ void rlUnloadTexture(unsigned int id)
 // NOTE: Only supports GPU mipmap generation
 void rlGenTextureMipmaps(unsigned int id, int width, int height, int format, int *mipmaps)
 {
+#if defined(PLATFORM_DREAMCAST)
+    rlDcExternalStateBarrier();
+#endif
 #if defined(GRAPHICS_API_OPENGL_33) || defined(GRAPHICS_API_OPENGL_ES2)
     glBindTexture(GL_TEXTURE_2D, id);
 
@@ -3880,7 +3986,9 @@ void rlGenTextureMipmaps(unsigned int id, int width, int height, int format, int
     if (texIsSquarePOT)
     {
         glGenerateMipmap(GL_TEXTURE_2D);                            // GLdc: GL/glext.h
-        *mipmaps = 1 + (int)floor(log((double)width)/log(2.0));
+        int levels = 1;
+        for (unsigned int side = (unsigned int)width; side > 1u; side >>= 1) levels++;
+        *mipmaps = levels;
         TRACELOG(RL_LOG_INFO, "TEXTURE: [ID %i] Mipmaps generated (DC/GLdc), total: %i", id, *mipmaps);
     }
     else TRACELOG(RL_LOG_WARNING, "TEXTURE: [ID %i] DC mipmaps require a square power-of-two texture", id);
@@ -3894,6 +4002,15 @@ void rlGenTextureMipmaps(unsigned int id, int width, int height, int format, int
 // Read texture pixel data
 void *rlReadTexturePixels(unsigned int id, int width, int height, int format)
 {
+#if defined(PLATFORM_DREAMCAST)
+    (void)id;
+    (void)width;
+    (void)height;
+    (void)format;
+    /* GLdc's glGetTexImage() symbol is an empty compatibility stub.  Do not
+     * allocate and expose uninitialized bytes as if readback had succeeded. */
+    return NULL;
+#else
     void *pixels = NULL;
 
 #if defined(GRAPHICS_API_OPENGL_11) || defined(GRAPHICS_API_OPENGL_33)
@@ -3956,11 +4073,20 @@ void *rlReadTexturePixels(unsigned int id, int width, int height, int format)
 #endif
 
     return pixels;
+#endif
 }
 
 // Read screen pixel data (color buffer)
 unsigned char *rlReadScreenPixels(int width, int height)
 {
+#if defined(PLATFORM_DREAMCAST)
+    (void)width;
+    (void)height;
+    /* GLdc's glReadPixels() is intentionally unimplemented.  NULL is the
+     * neutral sentinel expected by TakeScreenshot() and avoids manufacturing
+     * a black image after a failed readback. */
+    return NULL;
+#else
     unsigned char *screenData = (unsigned char *)RL_CALLOC(width*height*4, sizeof(unsigned char));
 
     // NOTE 1: glReadPixels returns image flipped vertically -> (0,0) is the bottom left corner of the framebuffer
@@ -3988,6 +4114,7 @@ unsigned char *rlReadScreenPixels(int width, int height)
     RL_FREE(screenData);
 
     return imgData;     // NOTE: image data should be freed
+#endif
 }
 
 // Framebuffer management (fbo)
@@ -4233,7 +4360,9 @@ void rlDisableVertexAttribute(unsigned int index)
 void rlDrawVertexArray(int offset, int count)
 {
 #if defined(PLATFORM_DREAMCAST)
-    rlDcFlushOnStateChange();  // Flush batcher to preserve draw ordering
+    /* Client pointers were installed after the queued batch flush. Resolve
+     * only a still-pending texture disable before the direct draw. */
+    if (__builtin_expect(rlDcBatch.pendingUnbind != 0, 0)) rlDcResolvePendingUnbind();
 #endif
     glDrawArrays(GL_TRIANGLES, offset, count);
 }
@@ -4242,7 +4371,7 @@ void rlDrawVertexArray(int offset, int count)
 void rlDrawVertexArrayElements(int offset, int count, const void *buffer)
 {
 #if defined(PLATFORM_DREAMCAST)
-    rlDcFlushOnStateChange();  // Flush batcher to preserve draw ordering
+    if (__builtin_expect(rlDcBatch.pendingUnbind != 0, 0)) rlDcResolvePendingUnbind();
 #endif
     // NOTE: Added pointer math separately from function to avoid UBSAN complaining
     unsigned short *bufferPtr = (unsigned short *)buffer;
@@ -4275,6 +4404,11 @@ void rlDrawVertexArrayElementsInstanced(int offset, int count, const void *buffe
 // Enable vertex state pointer
 void rlEnableStatePointer(int vertexAttribType, void *buffer)
 {
+#if defined(PLATFORM_DREAMCAST)
+    /* Ordering must be resolved before installing caller pointers: flushing
+     * later at rlDrawVertexArray() would replace and disable these arrays. */
+    rlDcClientArrayBarrier();
+#endif
     if (buffer != NULL) glEnableClientState(vertexAttribType);
     switch (vertexAttribType)
     {
@@ -5467,7 +5601,8 @@ static int rlGetPixelDataSize(int width, int height, int format)
 
 // Auxiliar math functions
 
-// Get float array of matrix data
+// Get float array of matrix data (programmable pipeline only)
+#if defined(GRAPHICS_API_OPENGL_33) || defined(GRAPHICS_API_OPENGL_ES2)
 static rl_float16 rlMatrixToFloatV(Matrix mat)
 {
     rl_float16 result = { 0 };
@@ -5491,6 +5626,7 @@ static rl_float16 rlMatrixToFloatV(Matrix mat)
 
     return result;
 }
+#endif
 
 // Get identity matrix
 static Matrix rlMatrixIdentity(void)
@@ -5505,8 +5641,9 @@ static Matrix rlMatrixIdentity(void)
     return result;
 }
 
-// Get two matrix multiplication
+// Get two matrix multiplication (programmable pipeline only)
 // NOTE: When multiplying matrices... the order matters!
+#if defined(GRAPHICS_API_OPENGL_33) || defined(GRAPHICS_API_OPENGL_ES2)
 static Matrix rlMatrixMultiply(Matrix left, Matrix right)
 {
     Matrix result = { 0 };
@@ -5602,5 +5739,10 @@ static Matrix rlMatrixInvert(Matrix mat)
 
     return result;
 }
+#endif
+
+#if defined(GRAPHICS_API_OPENGL_11) && (defined(__GNUC__) || defined(__clang__))
+    #pragma GCC diagnostic pop
+#endif
 
 #endif  // RLGL_IMPLEMENTATION

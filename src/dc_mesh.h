@@ -4,11 +4,11 @@
  * Provides loading, drawing, and transparent routing for .dcmesh files.
  * Drop this file into your raylib src/ directory.
  *
- * Compile with -DPLATFORM_DREAMCAST (already set by DC build).
+ * Compile with -DPLATFORM_DREAMCAST (raylib) or -DDREAMCAST (applications).
  * Optional: -DENABLE_PATCH_E=1 to enable opaque-list routing.
  * Optional: -DENABLE_STRIPS=1 to enable strip rendering via GLdc.
  *
- * Both default to 1 when PLATFORM_DREAMCAST is defined.
+ * Both default to 1 for either Dreamcast target macro.
  */
 
 #ifndef DC_MESH_H
@@ -18,6 +18,10 @@
 
 #include "dcmesh.h"
 #include "raylib.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /* Feature toggles — default ON for Dreamcast */
 #ifndef ENABLE_STRIPS
@@ -41,54 +45,64 @@
  * ---------------------------------------------------------------- */
 
 /* Try to load a .dcmesh sidecar for the given model file.
- * Call this after LoadModel(). If "model.glb" was loaded, this
- * checks for "model.dcmesh" and loads strip data if found.
+ * LoadModel() calls this automatically when strip support is enabled;
+ * direct callers may use it for models assembled by other loaders. A
+ * second call on an already fully-linked model is idempotent.
  * Returns 1 if strip data was loaded, 0 if not found or failed.
  *
  * The function modifies model->meshes[].vaoId to link each mesh
  * to its strip data in the registry. */
-int dcMeshLoadSidecar(Model *model, const char *modelPath);
+RLAPI int dcMeshLoadSidecar(Model *model, const char *modelPath);
 
 /* Draw a mesh using strip/Patch E path if available, or fall back
  * to standard GLdc path. This is the replacement for DrawMesh()
  * on Dreamcast — called from the transparent routing hook. */
-void dcMeshDraw(Mesh mesh, Material material, Matrix transform);
+RLAPI void dcMeshDraw(Mesh mesh, Material material, Matrix transform);
 
 /* Explicit batch path for many instances of one dcmesh-backed material.
  * Begin binds texture/client arrays once, each Draw submits one triangle array
  * with its own transform/tint, and End tears state down. Returns 1 if the
  * model/material has dcmesh strip data and the batch was opened. */
-int dcMeshBatchBegin(Model model, int materialIndex);
-void dcMeshBatchDraw(Matrix transform, Color tint);
-void dcMeshBatchEnd(void);
+RLAPI int dcMeshBatchBegin(Model model, int materialIndex);
+RLAPI void dcMeshBatchDraw(Matrix transform, Color tint);
+RLAPI void dcMeshBatchEnd(void);
 
-/* Unload all DCMesh data associated with a model.
- * Call this before UnloadModel(). */
-void dcMeshUnloadModel(Model *model);
+/* Unload all DCMesh data associated with a model. UnloadModel() and
+ * UnloadMesh() call the corresponding hooks automatically. */
+RLAPI void dcMeshUnloadModel(Model *model);
+RLAPI void dcMeshUnloadMesh(Mesh *mesh);
 
 /* Check if a mesh has DCMesh strip data loaded. */
-int dcMeshHasStripData(Mesh mesh);
+RLAPI int dcMeshHasStripData(Mesh mesh);
 
 /* UploadMesh hook — if mesh has dcmesh data, syncs positions and colors
  * from raylib arrays to strip vertices and returns 1.
  * Returns 0 if no dcmesh data (caller runs normal UploadMesh).
  * Game code should NOT call this directly — it's called from the
  * UploadMesh hook in rmodels.c automatically. */
-int dcMeshHandleUpload(Mesh *mesh, bool dynamic);
-void dcMeshSyncColors(Mesh *mesh);   /* colors-only per-frame sync: no cache rebuild */
+RLAPI int dcMeshHandleUpload(Mesh *mesh, bool dynamic);
+
+/* Native color contract: Dreamcast mesh color producers store bytes in
+ * GLdc's native BGRA order. DCMesh sidecars and synchronization deliberately
+ * copy that packed uint32_t without a runtime channel conversion. */
+RLAPI void dcMeshSyncColors(Mesh *mesh);   /* colors-only per-frame sync: no cache rebuild */
 
 /* Print DCMesh registry stats (for debugging). */
-void dcMeshPrintRegistryStats(void);
+RLAPI void dcMeshPrintRegistryStats(void);
 
 /* Recenter DCMesh geometry — call right after recenter_model_geometry()
  * so strip vertices get the same offset as raylib mesh vertices.
  * Pass the SAME (dx, dy, dz) values — uses -= internally. */
-void dcMeshRecenterGeometry(Model *model, float offsetX, float offsetY, float offsetZ);
+RLAPI void dcMeshRecenterGeometry(Model *model, float offsetX, float offsetY, float offsetZ);
 
-/* Safe UploadMesh wrapper — temporarily clears the dcmesh vaoId tag
- * to suppress "already loaded" warnings, then restores it.
- * Use instead of UploadMesh() for meshes with dcmesh data. */
-void dcMeshUploadSafe(Mesh *mesh, bool dynamic);
+/* Compatibility wrapper for callers that explicitly upload a mesh. Tagged
+ * meshes take the DCMesh synchronization hook; ordinary meshes take the
+ * normal UploadMesh path. */
+RLAPI void dcMeshUploadSafe(Mesh *mesh, bool dynamic);
 
-#endif /* PLATFORM_DREAMCAST */
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* PLATFORM_DREAMCAST || DREAMCAST */
 #endif /* DC_MESH_H */

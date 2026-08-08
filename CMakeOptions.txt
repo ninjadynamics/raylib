@@ -2,7 +2,9 @@
 include(CMakeDependentOption)
 include(EnumOption)
 
-enum_option(PLATFORM "Desktop;Web;Android;Raspberry Pi;DRM;SDL" "Platform to build for.")
+# Dreamcast requires KOS + GLdc and is intentionally built through src/Makefile;
+# do not advertise its private DCMesh surface through this host-oriented route.
+enum_option(PLATFORM "Desktop;Web;Android;Raspberry Pi;DRM;SDL" "Platform to build for (Dreamcast uses src/Makefile).")
 
 enum_option(OPENGL_VERSION "OFF;4.3;3.3;2.1;1.1;ES 2.0;ES 3.0" "Force a specific OpenGL Version?")
 

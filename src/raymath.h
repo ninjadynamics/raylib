@@ -117,46 +117,6 @@
 #include <sh4zam/shz_matrix.h>
 #include <sh4zam/shz_quat.h>
 #include <sh4zam/shz_xmtrx.h>
-
-// Raylib Matrix is row-major in memory (m0,m4,m8,m12 contiguous)
-// sh4zam mat4x4_t is column-major in memory (col[0]={m0,m1,m2,m3} contiguous)
-// These are transposed relative to each other.
-//
-// Raylib memory:  [m0 m4 m8 m12 | m1 m5 m9 m13 | m2 m6 m10 m14 | m3 m7 m11 m15]
-// sh4zam memory:  [m0 m1 m2 m3  | m4 m5 m6 m7  | m8 m9 m10 m11 | m12 m13 m14 m15]
-//
-// Since raylib's math semantics already treat the struct as column-major
-// (see CONVENTIONS comment at top), the named members (m0-m15) have identical
-// *semantic* meaning in both systems. The conversion is just a memory reorder.
-
-static inline shz_mat4x4_t _rlShzFromMatrix(Matrix m) {
-    shz_mat4x4_t out;
-    out.elem[0]  = m.m0;  out.elem[1]  = m.m1;  out.elem[2]  = m.m2;  out.elem[3]  = m.m3;
-    out.elem[4]  = m.m4;  out.elem[5]  = m.m5;  out.elem[6]  = m.m6;  out.elem[7]  = m.m7;
-    out.elem[8]  = m.m8;  out.elem[9]  = m.m9;  out.elem[10] = m.m10; out.elem[11] = m.m11;
-    out.elem[12] = m.m12; out.elem[13] = m.m13; out.elem[14] = m.m14; out.elem[15] = m.m15;
-    return out;
-}
-
-static inline Matrix _rlShzToMatrix(shz_mat4x4_t m) {
-    Matrix out;
-    out.m0  = m.elem[0];  out.m1  = m.elem[1];  out.m2  = m.elem[2];  out.m3  = m.elem[3];
-    out.m4  = m.elem[4];  out.m5  = m.elem[5];  out.m6  = m.elem[6];  out.m7  = m.elem[7];
-    out.m8  = m.elem[8];  out.m9  = m.elem[9];  out.m10 = m.elem[10]; out.m11 = m.elem[11];
-    out.m12 = m.elem[12]; out.m13 = m.elem[13]; out.m14 = m.elem[14]; out.m15 = m.elem[15];
-    return out;
-}
-
-// Quaternion conversion: raylib={x,y,z,w}, sh4zam={w,x,y,z}
-static inline shz_quat_t _rlShzFromQuat(Quaternion q) {
-    return shz_quat_init(q.w, q.x, q.y, q.z);
-}
-
-static inline Quaternion _rlShzToQuat(shz_quat_t q) {
-    Quaternion out = { q.x, q.y, q.z, q.w };
-    return out;
-}
-
 #endif /* USE_SH4ZAM */
 
 //----------------------------------------------------------------------------------
@@ -208,6 +168,47 @@ typedef struct Matrix {
 } Matrix;
 #define RL_MATRIX_TYPE
 #endif
+
+#ifdef USE_SH4ZAM
+// Raylib Matrix is row-major in memory (m0,m4,m8,m12 contiguous)
+// sh4zam mat4x4_t is column-major in memory (col[0]={m0,m1,m2,m3} contiguous)
+// These are transposed relative to each other.
+//
+// Raylib memory:  [m0 m4 m8 m12 | m1 m5 m9 m13 | m2 m6 m10 m14 | m3 m7 m11 m15]
+// sh4zam memory:  [m0 m1 m2 m3  | m4 m5 m6 m7  | m8 m9 m10 m11 | m12 m13 m14 m15]
+//
+// Since raylib's math semantics already treat the struct as column-major
+// (see CONVENTIONS comment at top), the named members (m0-m15) have identical
+// *semantic* meaning in both systems. The conversion is just a memory reorder.
+
+static inline shz_mat4x4_t _rlShzFromMatrix(Matrix m) {
+    shz_mat4x4_t out;
+    out.elem[0]  = m.m0;  out.elem[1]  = m.m1;  out.elem[2]  = m.m2;  out.elem[3]  = m.m3;
+    out.elem[4]  = m.m4;  out.elem[5]  = m.m5;  out.elem[6]  = m.m6;  out.elem[7]  = m.m7;
+    out.elem[8]  = m.m8;  out.elem[9]  = m.m9;  out.elem[10] = m.m10; out.elem[11] = m.m11;
+    out.elem[12] = m.m12; out.elem[13] = m.m13; out.elem[14] = m.m14; out.elem[15] = m.m15;
+    return out;
+}
+
+static inline Matrix _rlShzToMatrix(shz_mat4x4_t m) {
+    Matrix out;
+    out.m0  = m.elem[0];  out.m1  = m.elem[1];  out.m2  = m.elem[2];  out.m3  = m.elem[3];
+    out.m4  = m.elem[4];  out.m5  = m.elem[5];  out.m6  = m.elem[6];  out.m7  = m.elem[7];
+    out.m8  = m.elem[8];  out.m9  = m.elem[9];  out.m10 = m.elem[10]; out.m11 = m.elem[11];
+    out.m12 = m.elem[12]; out.m13 = m.elem[13]; out.m14 = m.elem[14]; out.m15 = m.elem[15];
+    return out;
+}
+
+// Quaternion conversion: raylib={x,y,z,w}, sh4zam={w,x,y,z}
+static inline shz_quat_t _rlShzFromQuat(Quaternion q) {
+    return shz_quat_init(q.w, q.x, q.y, q.z);
+}
+
+static inline Quaternion _rlShzToQuat(shz_quat_t q) {
+    Quaternion out = { q.x, q.y, q.z, q.w };
+    return out;
+}
+#endif /* USE_SH4ZAM */
 
 // NOTE: Helper types to be used instead of array return types for *ToFloat functions
 typedef struct float3 {
@@ -908,12 +909,11 @@ RMAPI void Vector3OrthoNormalize(Vector3 *v1, Vector3 *v2)
 RMAPI Vector3 Vector3Transform(Vector3 v, Matrix mat)
 {
 #ifdef USE_SH4ZAM
-    // `mat` is a by-value parameter, which the SH4 ABI places at 4-byte
-    // alignment - the plain fmov.d loader (shz_xmtrx_load_4x4) faults on real
-    // hardware when the address isn't 8-aligned. The unaligned loader checks
-    // the address at runtime and uses the fmov.s path when needed. Same float
-    // order as the raw (shz_mat4x4_t*) cast, so the math is unchanged.
-    shz_xmtrx_load_unaligned_4x4((const float*)&mat);
+    // Preserve the established XMTRX/FTRV fast path while loading raylib's
+    // transposed in-memory layout correctly. This loader uses scalar FMOVs,
+    // accepts the SH4 ABI's 4-byte-aligned by-value Matrix, and avoids the
+    // alignment branch taken by the old raw loader.
+    shz_xmtrx_load_transpose_unaligned_4x4((const float *)&mat);
     shz_vec4_t sv = { .x = v.x, .y = v.y, .z = v.z, .w = 1.0f };
     shz_vec4_t sr = shz_xmtrx_transform_vec4(sv);
     Vector3 result = { sr.x, sr.y, sr.z };
@@ -2197,7 +2197,7 @@ RMAPI Quaternion QuaternionNormalize(Quaternion q)
 #ifdef USE_SH4ZAM
     union { Quaternion raylib; shz_vec4_t sh4zam; } bits;
     bits.raylib = q;
-    bits.sh4zam = shz_vec4_normalize(bits.sh4zam);
+    bits.sh4zam = shz_vec4_normalize_safe(bits.sh4zam);
     return bits.raylib;
 #else
     Quaternion result = { 0 };

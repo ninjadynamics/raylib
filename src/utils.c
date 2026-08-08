@@ -48,6 +48,7 @@
 #include <stdio.h>                      // Required for: FILE, fopen(), fseek(), ftell(), fread(), fwrite(), fprintf(), vprintf(), fclose()
 #include <stdarg.h>                     // Required for: va_list, va_start(), va_end()
 #include <string.h>                     // Required for: strcpy(), strcat()
+#include <limits.h>                     // Required for: INT_MAX, UINT_MAX
 
 //----------------------------------------------------------------------------------
 // Defines and Macros
@@ -113,42 +114,43 @@ void TraceLog(int logType, const char *text, ...)
 
     if (traceLog)
     {
-        traceLog(logType, text, args);
+        traceLog(logType, (text != NULL)? text : "", args);
         va_end(args);
-        return;
+        return;     // A custom callback owns LOG_FATAL handling, as in the public contract
     }
-
+    else
+    {
 #if defined(PLATFORM_ANDROID)
     switch (logType)
     {
-        case LOG_TRACE: __android_log_vprint(ANDROID_LOG_VERBOSE, "raylib", text, args); break;
-        case LOG_DEBUG: __android_log_vprint(ANDROID_LOG_DEBUG, "raylib", text, args); break;
-        case LOG_INFO: __android_log_vprint(ANDROID_LOG_INFO, "raylib", text, args); break;
-        case LOG_WARNING: __android_log_vprint(ANDROID_LOG_WARN, "raylib", text, args); break;
-        case LOG_ERROR: __android_log_vprint(ANDROID_LOG_ERROR, "raylib", text, args); break;
-        case LOG_FATAL: __android_log_vprint(ANDROID_LOG_FATAL, "raylib", text, args); break;
+        case LOG_TRACE: __android_log_vprint(ANDROID_LOG_VERBOSE, "raylib", (text != NULL)? text : "", args); break;
+        case LOG_DEBUG: __android_log_vprint(ANDROID_LOG_DEBUG, "raylib", (text != NULL)? text : "", args); break;
+        case LOG_INFO: __android_log_vprint(ANDROID_LOG_INFO, "raylib", (text != NULL)? text : "", args); break;
+        case LOG_WARNING: __android_log_vprint(ANDROID_LOG_WARN, "raylib", (text != NULL)? text : "", args); break;
+        case LOG_ERROR: __android_log_vprint(ANDROID_LOG_ERROR, "raylib", (text != NULL)? text : "", args); break;
+        case LOG_FATAL: __android_log_vprint(ANDROID_LOG_FATAL, "raylib", (text != NULL)? text : "", args); break;
         default: break;
     }
 #else
-    char buffer[MAX_TRACELOG_MSG_LENGTH] = { 0 };
+    const char *prefix = "";
 
     switch (logType)
     {
-        case LOG_TRACE: strcpy(buffer, "TRACE: "); break;
-        case LOG_DEBUG: strcpy(buffer, "DEBUG: "); break;
-        case LOG_INFO: strcpy(buffer, "INFO: "); break;
-        case LOG_WARNING: strcpy(buffer, "WARNING: "); break;
-        case LOG_ERROR: strcpy(buffer, "ERROR: "); break;
-        case LOG_FATAL: strcpy(buffer, "FATAL: "); break;
+        case LOG_TRACE: prefix = "TRACE: "; break;
+        case LOG_DEBUG: prefix = "DEBUG: "; break;
+        case LOG_INFO: prefix = "INFO: "; break;
+        case LOG_WARNING: prefix = "WARNING: "; break;
+        case LOG_ERROR: prefix = "ERROR: "; break;
+        case LOG_FATAL: prefix = "FATAL: "; break;
         default: break;
     }
 
-    unsigned int textSize = (unsigned int)strlen(text);
-    memcpy(buffer + strlen(buffer), text, (textSize < (MAX_TRACELOG_MSG_LENGTH - 12))? textSize : (MAX_TRACELOG_MSG_LENGTH - 12));
-    strcat(buffer, "\n");
-    vprintf(buffer, args);
+    fputs(prefix, stdout);
+    if (text != NULL) vprintf(text, args);
+    fputc('\n', stdout);
     fflush(stdout);
 #endif
+    }
 
     va_end(args);
 
@@ -182,6 +184,7 @@ void MemFree(void *ptr)
 unsigned char *LoadFileData(const char *fileName, int *dataSize)
 {
     unsigned char *data = NULL;
+    if (dataSize == NULL) return NULL;
     *dataSize = 0;
 
     if (fileName != NULL)
@@ -198,9 +201,10 @@ unsigned char *LoadFileData(const char *fileName, int *dataSize)
         {
             // WARNING: On binary streams SEEK_END could not be found,
             // using fseek() and ftell() could not work in some (rare) cases
-            fseek(file, 0, SEEK_END);
-            int size = ftell(file);     // WARNING: ftell() returns 'long int', maximum size returned is INT_MAX (2147483647 bytes)
-            fseek(file, 0, SEEK_SET);
+            long fileSize = -1;
+            if ((fseek(file, 0, SEEK_END) == 0)) fileSize = ftell(file);
+            if ((fileSize < 0) || (fileSize > INT_MAX) || (fseek(file, 0, SEEK_SET) != 0)) fileSize = -1;
+            int size = (int)fileSize;
 
             if (size > 0)
             {
@@ -213,20 +217,10 @@ unsigned char *LoadFileData(const char *fileName, int *dataSize)
 
                     // WARNING: fread() returns a size_t value, usually 'unsigned int' (32bit compilation) and 'unsigned long long' (64bit compilation)
                     // dataSize is unified along raylib as a 'int' type, so, for file-sizes > INT_MAX (2147483647 bytes) we have a limitation
-                    if (count > 2147483647)
-                    {
-                        TRACELOG(LOG_WARNING, "FILEIO: [%s] File is bigger than 2147483647 bytes, avoid using LoadFileData()", fileName);
+                    *dataSize = (int)count;
 
-                        RL_FREE(data);
-                        data = NULL;
-                    }
-                    else
-                    {
-                        *dataSize = (int)count;
-
-                        if ((*dataSize) != size) TRACELOG(LOG_WARNING, "FILEIO: [%s] File partially loaded (%i bytes out of %i)", fileName, dataSize, count);
-                        else TRACELOG(LOG_INFO, "FILEIO: [%s] File loaded successfully", fileName);
-                    }
+                    if ((*dataSize) != size) TRACELOG(LOG_WARNING, "FILEIO: [%s] File partially loaded (%i bytes out of %i)", fileName, *dataSize, size);
+                    else TRACELOG(LOG_INFO, "FILEIO: [%s] File loaded successfully", fileName);
                 }
                 else TRACELOG(LOG_WARNING, "FILEIO: [%s] Failed to allocated memory for file reading", fileName);
             }
@@ -255,7 +249,7 @@ bool SaveFileData(const char *fileName, void *data, int dataSize)
 {
     bool success = false;
 
-    if (fileName != NULL)
+    if ((fileName != NULL) && (dataSize >= 0) && ((dataSize == 0) || (data != NULL)))
     {
         if (saveFileData)
         {
@@ -268,21 +262,20 @@ bool SaveFileData(const char *fileName, void *data, int dataSize)
         {
             // WARNING: fwrite() returns a size_t value, usually 'unsigned int' (32bit compilation) and 'unsigned long long' (64bit compilation)
             // and expects a size_t input value but as dataSize is limited to INT_MAX (2147483647 bytes), there shouldn't be a problem
-            int count = (int)fwrite(data, sizeof(unsigned char), dataSize, file);
+            size_t count = (dataSize > 0)? fwrite(data, sizeof(unsigned char), (size_t)dataSize, file) : 0;
 
-            if (count == 0) TRACELOG(LOG_WARNING, "FILEIO: [%s] Failed to write file", fileName);
-            else if (count != dataSize) TRACELOG(LOG_WARNING, "FILEIO: [%s] File partially written", fileName);
+            if (count != (size_t)dataSize) TRACELOG(LOG_WARNING, "FILEIO: [%s] File partially written", fileName);
             else TRACELOG(LOG_INFO, "FILEIO: [%s] File saved successfully", fileName);
 
             int result = fclose(file);
-            if (result == 0) success = true;
+            success = (count == (size_t)dataSize) && (result == 0);
         }
         else TRACELOG(LOG_WARNING, "FILEIO: [%s] Failed to open file", fileName);
 #else
     TRACELOG(LOG_WARNING, "FILEIO: Standard file io not supported, use custom file callback");
 #endif
     }
-    else TRACELOG(LOG_WARNING, "FILEIO: File name provided is not valid");
+    else TRACELOG(LOG_WARNING, "FILEIO: File name or data provided is not valid");
 
     return success;
 }
@@ -296,11 +289,24 @@ bool ExportDataAsCode(const unsigned char *data, int dataSize, const char *fileN
     #define TEXT_BYTES_PER_LINE     20
 #endif
 
+    if ((fileName == NULL) || (fileName[0] == '\0') || (dataSize < 0) || ((dataSize > 0) && (data == NULL)) ||
+        ((size_t)dataSize > (((size_t)-1) - 4096)/6))
+    {
+        TRACELOG(LOG_WARNING, "FILEIO: Invalid data or file name for code export");
+        return false;
+    }
+
     // NOTE: Text data buffer size is estimated considering raw data size in bytes
     // and requiring 6 char bytes for every byte: "0x00, "
-    char *txtData = (char *)RL_CALLOC(dataSize*6 + 2000, sizeof(char));
+    size_t textCapacity = (size_t)dataSize*6 + 4096;
+    char *txtData = (char *)RL_CALLOC(textCapacity, sizeof(char));
+    if (txtData == NULL)
+    {
+        TRACELOG(LOG_WARNING, "FILEIO: Failed to allocate code export buffer");
+        return false;
+    }
 
-    int byteCount = 0;
+    size_t byteCount = 0;
     byteCount += sprintf(txtData + byteCount, "////////////////////////////////////////////////////////////////////////////////////////\n");
     byteCount += sprintf(txtData + byteCount, "//                                                                                    //\n");
     byteCount += sprintf(txtData + byteCount, "// DataAsCode exporter v1.0 - Raw data exported as an array of bytes                  //\n");
@@ -314,20 +320,34 @@ bool ExportDataAsCode(const unsigned char *data, int dataSize, const char *fileN
 
     // Get file name from path
     char varFileName[256] = { 0 };
-    strcpy(varFileName, GetFileNameWithoutExt(fileName));
+    const char *baseName = GetFileNameWithoutExt(fileName);
+    int nameLength = snprintf(varFileName, sizeof(varFileName), "%s", (baseName != NULL)? baseName : "");
+    if ((nameLength <= 0) || (nameLength >= (int)sizeof(varFileName)))
+    {
+        TRACELOG(LOG_WARNING, "FILEIO: Invalid variable name for code export");
+        RL_FREE(txtData);
+        return false;
+    }
+
     for (int i = 0; varFileName[i] != '\0'; i++)
     {
         // Convert variable name to uppercase
         if ((varFileName[i] >= 'a') && (varFileName[i] <= 'z')) { varFileName[i] = varFileName[i] - 32; }
-        // Replace non valid character for C identifier with '_'
-        else if (varFileName[i] == '.' || varFileName[i] == '-' || varFileName[i] == '?' || varFileName[i] == '!' || varFileName[i] == '+') { varFileName[i] = '_'; }
+        // Replace non-valid C identifier characters with '_'
+        else if (!(((varFileName[i] >= 'A') && (varFileName[i] <= 'Z')) ||
+                   ((varFileName[i] >= '0') && (varFileName[i] <= '9')) || (varFileName[i] == '_'))) varFileName[i] = '_';
     }
+    if ((varFileName[0] >= '0') && (varFileName[0] <= '9')) varFileName[0] = '_';
 
     byteCount += sprintf(txtData + byteCount, "#define %s_DATA_SIZE     %i\n\n", varFileName, dataSize);
 
-    byteCount += sprintf(txtData + byteCount, "static unsigned char %s_DATA[%s_DATA_SIZE] = { ", varFileName, varFileName);
-    for (int i = 0; i < (dataSize - 1); i++) byteCount += sprintf(txtData + byteCount, ((i%TEXT_BYTES_PER_LINE == 0)? "0x%x,\n" : "0x%x, "), data[i]);
-    byteCount += sprintf(txtData + byteCount, "0x%x };\n", data[dataSize - 1]);
+    if (dataSize == 0) byteCount += sprintf(txtData + byteCount, "static unsigned char %s_DATA[1] = { 0 };\n", varFileName);
+    else
+    {
+        byteCount += sprintf(txtData + byteCount, "static unsigned char %s_DATA[%s_DATA_SIZE] = { ", varFileName, varFileName);
+        for (int i = 0; i < (dataSize - 1); i++) byteCount += sprintf(txtData + byteCount, ((i%TEXT_BYTES_PER_LINE == 0)? "0x%x,\n" : "0x%x, "), data[i]);
+        byteCount += sprintf(txtData + byteCount, "0x%x };\n", data[dataSize - 1]);
+    }
 
     // NOTE: Text data size exported is determined by '\0' (NULL) character
     success = SaveFileText(fileName, txtData);
@@ -361,9 +381,10 @@ char *LoadFileText(const char *fileName)
             // WARNING: When reading a file as 'text' file,
             // text mode causes carriage return-linefeed translation...
             // ...but using fseek() should return correct byte-offset
-            fseek(file, 0, SEEK_END);
-            unsigned int size = (unsigned int)ftell(file);
-            fseek(file, 0, SEEK_SET);
+            long fileSize = -1;
+            if (fseek(file, 0, SEEK_END) == 0) fileSize = ftell(file);
+            if ((fileSize < 0) || ((unsigned long)fileSize >= UINT_MAX) || (fseek(file, 0, SEEK_SET) != 0)) fileSize = -1;
+            unsigned int size = (fileSize > 0)? (unsigned int)fileSize : 0;
 
             if (size > 0)
             {
@@ -373,14 +394,14 @@ char *LoadFileText(const char *fileName)
                 {
                     unsigned int count = (unsigned int)fread(text, sizeof(char), size, file);
 
-                    // WARNING: \r\n is converted to \n on reading, so,
-                    // read bytes count gets reduced by the number of lines
-                    if (count < size) text = RL_REALLOC(text, count + 1);
-
                     // Zero-terminate the string
                     text[count] = '\0';
 
-                    TRACELOG(LOG_INFO, "FILEIO: [%s] Text file loaded successfully", fileName);
+                    if (ferror(file))
+                    {
+                        TRACELOG(LOG_WARNING, "FILEIO: [%s] Text file partially loaded (%u bytes out of %u)", fileName, count, size);
+                    }
+                    else TRACELOG(LOG_INFO, "FILEIO: [%s] Text file loaded successfully", fileName);
                 }
                 else TRACELOG(LOG_WARNING, "FILEIO: [%s] Failed to allocated memory for file reading", fileName);
             }
@@ -409,7 +430,7 @@ bool SaveFileText(const char *fileName, char *text)
 {
     bool success = false;
 
-    if (fileName != NULL)
+    if ((fileName != NULL) && (text != NULL))
     {
         if (saveFileText)
         {
@@ -426,14 +447,14 @@ bool SaveFileText(const char *fileName, char *text)
             else TRACELOG(LOG_INFO, "FILEIO: [%s] Text file saved successfully", fileName);
 
             int result = fclose(file);
-            if (result == 0) success = true;
+            success = (count >= 0) && (result == 0);
         }
         else TRACELOG(LOG_WARNING, "FILEIO: [%s] Failed to open text file", fileName);
 #else
     TRACELOG(LOG_WARNING, "FILEIO: Standard file io not supported, use custom file callback");
 #endif
     }
-    else TRACELOG(LOG_WARNING, "FILEIO: File name provided is not valid");
+    else TRACELOG(LOG_WARNING, "FILEIO: File name or text provided is not valid");
 
     return success;
 }

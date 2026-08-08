@@ -5,18 +5,27 @@
  * Phase 3: Patch E optimized submission (minimal state changes + opaque routing)
  *
  * Drop this file into your raylib src/ directory and add to build.
- * Requires: dcmesh.h, dc_mesh.h, PLATFORM_DREAMCAST defined.
+ * Requires: dcmesh.h, dc_mesh.h, and a Dreamcast target macro.
  */
 
-#if defined(PLATFORM_DREAMCAST)
+#if defined(PLATFORM_DREAMCAST) || defined(DREAMCAST)
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
+#include <stdint.h>
 #include <GL/gl.h>
 #include <GL/glkos.h>   /* glKosDrawMultiStrips (one-call model submission) */
 
+/* These GLdc extensions predate their public glkos.h declarations. Keep exact
+ * local prototypes so raylib remains warning-clean with both installed and
+ * current project GLdc headers; identical repeated C declarations are valid. */
+GLAPI void APIENTRY glKosDrawMultiStrips(const GLint *firsts, const GLsizei *counts, GLsizei n);
+GLAPI void APIENTRY glKosDrawTrianglesArrays(GLint first, GLsizei count);
+
 #include "dc_mesh.h"
+#include "dc_mesh_color.h"
 #include "raylib.h"
 #include "rlgl.h"
 #include "raymath.h"
@@ -30,6 +39,8 @@
  * Registry — global table mapping IDs to DCMeshData
  * ---------------------------------------------------------------- */
 static DCMeshData* dc_registry[DC_MESH_REGISTRY_MAX] = {0};
+static unsigned int dc_registry_refs[DC_MESH_REGISTRY_MAX] = {0};
+static uint32_t* dc_registry_source_counts[DC_MESH_REGISTRY_MAX] = {0};
 static int dc_registry_count = 0;
 
 #define DC_MESH_BATCH_CACHE_MAX 64
@@ -47,8 +58,10 @@ typedef struct {
 static DCMeshBatchCache dc_batch_caches[DC_MESH_BATCH_CACHE_MAX] = {0};
 
 static void dcBatchFreeCachesForData(DCMeshData *data);
+static void dcFreeData(DCMeshData *data);
 
-static int dcRegistryAdd(DCMeshData* data) {
+static int dcRegistryAdd(DCMeshData* data, uint32_t *source_counts, unsigned int refs) {
+    if (!data || !source_counts || refs == 0) return -1;
     if (dc_registry_count >= DC_MESH_REGISTRY_MAX) {
         printf("[DCMesh] Registry full (%d max)\n", DC_MESH_REGISTRY_MAX);
         return -1;
@@ -56,6 +69,8 @@ static int dcRegistryAdd(DCMeshData* data) {
     for (int i = 0; i < DC_MESH_REGISTRY_MAX; i++) {
         if (dc_registry[i] == NULL) {
             dc_registry[i] = data;
+            dc_registry_refs[i] = refs;
+            dc_registry_source_counts[i] = source_counts;
             dc_registry_count++;
             return i;
         }
@@ -75,22 +90,67 @@ static void dcRegistryRemove(unsigned int vaoId) {
     int idx = DCMESH_REGISTRY_INDEX(vaoId);
     if (idx >= 0 && idx < DC_MESH_REGISTRY_MAX && dc_registry[idx]) {
         dc_registry[idx] = NULL;
+        dc_registry_refs[idx] = 0;
+        free(dc_registry_source_counts[idx]);
+        dc_registry_source_counts[idx] = NULL;
         dc_registry_count--;
+    }
+}
+
+static uint32_t dcRegistrySourceVertexCount(unsigned int vaoId) {
+    if (!DCMESH_IS_REGISTRY_ID(vaoId)) return 0;
+    int idx = DCMESH_REGISTRY_INDEX(vaoId);
+    int sub = DCMESH_SUBMESH_INDEX(vaoId);
+    DCMeshData *data = dcRegistryGet(vaoId);
+    if (!data || sub < 0 || sub >= (int)data->submesh_count || !dc_registry_source_counts[idx]) return 0;
+    return dc_registry_source_counts[idx][sub];
+}
+
+static void dcRegistryRelease(unsigned int vaoId) {
+    if (!DCMESH_IS_REGISTRY_ID(vaoId)) return;
+    int idx = DCMESH_REGISTRY_INDEX(vaoId);
+    if (idx < 0 || idx >= DC_MESH_REGISTRY_MAX || !dc_registry[idx]) return;
+
+    if (dc_registry_refs[idx] > 0) dc_registry_refs[idx]--;
+    if (dc_registry_refs[idx] == 0) {
+        DCMeshData *data = dc_registry[idx];
+        dcRegistryRemove(vaoId);
+        dcFreeData(data);
     }
 }
 
 /* -------------------------------------------------------------------
  * File loader — reads .dcmesh binary into DCMeshData
  * ---------------------------------------------------------------- */
+static int dcReadExact(FILE *f, void *dst, size_t bytes, size_t *remaining) {
+    if (bytes > *remaining) return 0;
+    if ((bytes > 0) && (fread(dst, 1, bytes, f) != bytes)) return 0;
+    *remaining -= bytes;
+    return 1;
+}
+
+static int dcArrayBytes(uint32_t count, size_t item_size, size_t *bytes) {
+    if ((item_size != 0) && ((size_t)count > SIZE_MAX/item_size)) return 0;
+    *bytes = (size_t)count*item_size;
+    return 1;
+}
+
 static DCMeshData* dcLoadFile(const char* path) {
     FILE* f = fopen(path, "rb");
     if (!f) return NULL;
 
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
+    long end = ftell(f);
+    if ((end < 0) || (fseek(f, 0, SEEK_SET) != 0)) { fclose(f); return NULL; }
+    size_t remaining = (size_t)end;
+
     /* Read and validate header */
     DCMeshFileHeader fhdr;
-    if (fread(&fhdr, sizeof(fhdr), 1, f) != 1) { fclose(f); return NULL; }
+    if (!dcReadExact(f, &fhdr, sizeof(fhdr), &remaining)) { fclose(f); return NULL; }
 
-    if (fhdr.magic != DCMESH_MAGIC || fhdr.version != DCMESH_VERSION) {
+    if ((fhdr.magic != DCMESH_MAGIC) || (fhdr.version != DCMESH_VERSION) ||
+        (fhdr.submesh_count == 0) || (fhdr.submesh_count > 256) ||
+        (fhdr.reserved[0] != 0) || (fhdr.reserved[1] != 0) || (fhdr.reserved[2] != 0)) {
         printf("[DCMesh] Invalid file: %s (magic=0x%X ver=%u)\n",
                path, (unsigned)fhdr.magic, (unsigned)fhdr.version);
         fclose(f);
@@ -99,13 +159,29 @@ static DCMeshData* dcLoadFile(const char* path) {
 
     /* Allocate runtime structure */
     DCMeshData* data = (DCMeshData*)calloc(1, sizeof(DCMeshData));
+    if (!data) { fclose(f); return NULL; }
     data->submesh_count = fhdr.submesh_count;
     data->submeshes = (DCSubmesh*)calloc(fhdr.submesh_count, sizeof(DCSubmesh));
+    if (!data->submeshes) goto fail;
+
+    uint64_t total_vertices = 0;
+    uint64_t total_strips = 0;
 
     /* Read each submesh */
     for (uint32_t i = 0; i < fhdr.submesh_count; i++) {
         DCSubmeshHeader shdr;
-        if (fread(&shdr, sizeof(shdr), 1, f) != 1) goto fail;
+        if (!dcReadExact(f, &shdr, sizeof(shdr), &remaining)) goto fail;
+        if ((shdr.vertex_count == 0) || (shdr.vertex_count > INT_MAX) ||
+            (shdr.strip_count == 0) || (shdr.is_opaque > 1)) goto fail;
+
+        size_t vertices_bytes = 0;
+        size_t strips_bytes = 0;
+        size_t map_bytes = 0;
+        if (!dcArrayBytes(shdr.vertex_count, sizeof(DCVertex), &vertices_bytes) ||
+            !dcArrayBytes(shdr.strip_count, sizeof(DCStrip), &strips_bytes) ||
+            !dcArrayBytes(shdr.vertex_count, sizeof(uint16_t), &map_bytes)) goto fail;
+        if ((vertices_bytes > remaining) || (strips_bytes > remaining - vertices_bytes) ||
+            (map_bytes > remaining - vertices_bytes - strips_bytes)) goto fail;
 
         DCSubmesh* sm = &data->submeshes[i];
         sm->material_index = shdr.material_index;
@@ -114,20 +190,36 @@ static DCMeshData* dcLoadFile(const char* path) {
         sm->strip_count = shdr.strip_count;
 
         /* Read vertices */
-        sm->vertices = (DCVertex*)malloc(shdr.vertex_count * sizeof(DCVertex));
+        sm->vertices = (DCVertex*)malloc(vertices_bytes);
         if (!sm->vertices) goto fail;
-        if (fread(sm->vertices, sizeof(DCVertex), shdr.vertex_count, f) != shdr.vertex_count) goto fail;
+        if (!dcReadExact(f, sm->vertices, vertices_bytes, &remaining)) goto fail;
 
         /* Read strips */
-        sm->strips = (DCStrip*)malloc(shdr.strip_count * sizeof(DCStrip));
-        if (!sm->strips) goto fail;
-        if (fread(sm->strips, sizeof(DCStrip), shdr.strip_count, f) != shdr.strip_count) goto fail;
+        if (strips_bytes > 0) {
+            sm->strips = (DCStrip*)malloc(strips_bytes);
+            if (!sm->strips) goto fail;
+            if (!dcReadExact(f, sm->strips, strips_bytes, &remaining)) goto fail;
+        }
 
         /* Read vertex_map (strip vertex -> original vertex index) */
-        sm->vertex_map = (uint16_t*)malloc(shdr.vertex_count * sizeof(uint16_t));
+        sm->vertex_map = (uint16_t*)malloc(map_bytes);
         if (!sm->vertex_map) goto fail;
-        if (fread(sm->vertex_map, sizeof(uint16_t), shdr.vertex_count, f) != shdr.vertex_count) goto fail;
+        if (!dcReadExact(f, sm->vertex_map, map_bytes, &remaining)) goto fail;
+
+        for (uint32_t s = 0; s < sm->strip_count; s++) {
+            uint32_t first = sm->strips[s].first_vertex;
+            uint32_t count = sm->strips[s].vertex_count;
+            if ((count < 3) || (count > INT_MAX) || (first > sm->vertex_count) ||
+                (count > sm->vertex_count - first)) goto fail;
+        }
+
+        total_vertices += shdr.vertex_count;
+        total_strips += shdr.strip_count;
+        if ((total_vertices > UINT32_MAX) || (total_strips > UINT32_MAX)) goto fail;
     }
+
+    if ((remaining != 0) || (total_vertices != fhdr.total_vertices) ||
+        (total_strips != fhdr.total_strips)) goto fail;
 
     fclose(f);
     printf("[DCMesh] Loaded: %s (%u submeshes, %u verts, %u strips)\n",
@@ -165,24 +257,96 @@ static void dcFreeData(DCMeshData* data) {
  * Public API: Load sidecar
  * ---------------------------------------------------------------- */
 int dcMeshLoadSidecar(Model *model, const char *modelPath) {
-    if (!model || !modelPath) return 0;
+    if (!model || !modelPath || !model->meshes || (model->meshCount <= 0) ||
+        (model->meshCount > 256) || !model->materials || (model->materialCount <= 0)) return 0;
+
+    /* LoadModel() already calls this hook. Treat an exact second call as an
+       idempotent success; tear down only inconsistent/partial old linkage. */
+    DCMeshData *linked_data = NULL;
+    int fully_linked = 1;
+    int has_link = 0;
+    for (int i = 0; i < model->meshCount; i++) {
+        DCMeshData *entry = dcRegistryGet(model->meshes[i].vaoId);
+        if (entry) {
+            has_link = 1;
+            if (!linked_data) linked_data = entry;
+            if ((entry != linked_data) || (DCMESH_SUBMESH_INDEX(model->meshes[i].vaoId) != (unsigned int)i)) fully_linked = 0;
+        } else fully_linked = 0;
+    }
+    if (has_link && fully_linked && linked_data &&
+        ((int)linked_data->submesh_count == model->meshCount)) return 1;
+    if (has_link) dcMeshUnloadModel(model);
 
     /* Build .dcmesh path from model path */
     char dcpath[512];
-    strncpy(dcpath, modelPath, sizeof(dcpath) - 1);
-    dcpath[sizeof(dcpath) - 1] = '\0';
-
-    char* dot = strrchr(dcpath, '.');
-    if (dot) strcpy(dot, ".dcmesh");
-    else strcat(dcpath, ".dcmesh");
+    const char *slash = strrchr(modelPath, '/');
+    const char *backslash = strrchr(modelPath, '\\');
+    const char *base = slash;
+    if (!base || (backslash && backslash > base)) base = backslash;
+    base = base ? base + 1 : modelPath;
+    const char *dot = strrchr(base, '.');
+    size_t stem_len = dot ? (size_t)(dot - modelPath) : strlen(modelPath);
+    static const char suffix[] = ".dcmesh";
+    if (stem_len > sizeof(dcpath) - sizeof(suffix)) {
+        printf("[DCMesh] Model path is too long: %s\n", modelPath);
+        return 0;
+    }
+    memcpy(dcpath, modelPath, stem_len);
+    memcpy(dcpath + stem_len, suffix, sizeof(suffix));
 
     /* Try to load */
     DCMeshData* data = dcLoadFile(dcpath);
     if (!data) return 0;
 
+    if ((int)data->submesh_count != model->meshCount) {
+        printf("[DCMesh] Sidecar/model mesh-count mismatch: %u/%d\n",
+               (unsigned)data->submesh_count, model->meshCount);
+        dcFreeData(data);
+        return 0;
+    }
+
+    uint32_t *source_counts = (uint32_t *)calloc(data->submesh_count, sizeof(uint32_t));
+    if (!source_counts) { dcFreeData(data); return 0; }
+    for (uint32_t i = 0; i < data->submesh_count; i++) {
+        DCSubmesh *sm = &data->submeshes[i];
+        Mesh *mesh = &model->meshes[i];
+        /* DCMesh stores the source glTF material index. raylib reserves
+           material slot 0 for its default and maps glTF material N to N+1;
+           an unmaterialed primitive stays on slot 0. Accept both encodings so
+           validation preserves the established converter/runtime contract. */
+        if ((mesh->vertexCount <= 0) ||
+            (sm->material_index >= (uint32_t)model->materialCount)) {
+            free(source_counts);
+            dcFreeData(data);
+            return 0;
+        }
+        int material_matches = 1;
+        if (model->meshMaterial) {
+            int ray_material = model->meshMaterial[i];
+            int dc_material = (int)sm->material_index;
+            material_matches = (ray_material == dc_material) ||
+                               (ray_material == dc_material + 1);
+        }
+        if (!material_matches) {
+            free(source_counts);
+            dcFreeData(data);
+            return 0;
+        }
+        source_counts[i] = (uint32_t)mesh->vertexCount;
+        for (uint32_t v = 0; v < sm->vertex_count; v++) {
+            if (sm->vertex_map[v] >= source_counts[i]) {
+                printf("[DCMesh] Vertex map out of range in submesh %u\n", (unsigned)i);
+                free(source_counts);
+                dcFreeData(data);
+                return 0;
+            }
+        }
+    }
+
     /* Register */
-    int reg_idx = dcRegistryAdd(data);
+    int reg_idx = dcRegistryAdd(data, source_counts, (unsigned int)model->meshCount);
     if (reg_idx < 0) {
+        free(source_counts);
         dcFreeData(data);
         return 0;
     }
@@ -191,10 +355,7 @@ int dcMeshLoadSidecar(Model *model, const char *modelPath) {
      * Mesh[0] -> submesh[0], Mesh[1] -> submesh[1], etc.
      * Only link as many as we have submeshes for. */
     int linked = 0;
-    int limit = model->meshCount < (int)data->submesh_count
-              ? model->meshCount : (int)data->submesh_count;
-
-    for (int i = 0; i < limit; i++) {
+    for (int i = 0; i < model->meshCount; i++) {
         model->meshes[i].vaoId = DCMESH_MAKE_ID(reg_idx, i);
         linked++;
     }
@@ -284,19 +445,23 @@ static void dcBatchFreeCachesForData(DCMeshData *data) {
     }
 }
 
-static uint32_t dcBatchTriangleVertexCount(const DCSubmesh *sm) {
-    uint32_t count = 0;
+static int dcBatchTriangleVertexCount(const DCSubmesh *sm, uint32_t *result) {
+    uint64_t count = 0;
     for (uint32_t i = 0; i < sm->strip_count; i++) {
         if (sm->strips[i].vertex_count >= 3)
-            count += (sm->strips[i].vertex_count - 2) * 3;
+            count += ((uint64_t)sm->strips[i].vertex_count - 2u)*3u;
+        if (count > UINT32_MAX) return 0;
     }
-    return count;
+    *result = (uint32_t)count;
+    return 1;
 }
 
 static int dcBatchBuildCache(DCMeshBatchCache *cache, DCMeshData *data, int submesh_index) {
     DCSubmesh *sm = &data->submeshes[submesh_index];
-    uint32_t vertex_count = dcBatchTriangleVertexCount(sm);
-    if (vertex_count == 0) return 0;
+    uint32_t vertex_count = 0;
+    if (!dcBatchTriangleVertexCount(sm, &vertex_count) || (vertex_count == 0) ||
+        ((size_t)vertex_count > SIZE_MAX/sizeof(DCVertex)) ||
+        ((size_t)vertex_count > SIZE_MAX/sizeof(uint32_t))) return 0;
 
     DCVertex *vertices = (DCVertex *)malloc(vertex_count * sizeof(DCVertex));
     uint32_t *colors = (uint32_t *)malloc(vertex_count * sizeof(uint32_t));
@@ -380,6 +545,7 @@ int dcMeshBatchBegin(Model model, int materialIndex) {
 
     DCMeshData *data = NULL;
     int submesh_index = -1;
+    int match_count = 0;
 
     for (int i = 0; i < model.meshCount; i++) {
         int mesh_material = model.meshMaterial ? model.meshMaterial[i] : 0;
@@ -389,8 +555,15 @@ int dcMeshBatchBegin(Model model, int materialIndex) {
         if (!data) continue;
 
         submesh_index = DCMESH_SUBMESH_INDEX(model.meshes[i].vaoId);
-        if (submesh_index >= 0 && submesh_index < (int)data->submesh_count)
-            break;
+        if (submesh_index >= 0 && submesh_index < (int)data->submesh_count) {
+            match_count++;
+            if (match_count > 1) {
+                /* A one-cache batch cannot omit a second same-material mesh.
+                   Preserve the public result through the ordinary draw path. */
+                return 0;
+            }
+            continue;
+        }
 
         data = NULL;
         submesh_index = -1;
@@ -567,8 +740,9 @@ static void dcDrawSubmesh(DCSubmesh* sm, Material material, Matrix transform) {
  * ---------------------------------------------------------------- */
 void dcMeshDraw(Mesh mesh, Material material, Matrix transform) {
     DCMeshData* data = dcRegistryGet(mesh.vaoId);
+    int sub_idx = DCMESH_SUBMESH_INDEX(mesh.vaoId);
 
-    if (!data || !ENABLE_STRIPS) {
+    if (!data || !ENABLE_STRIPS || (sub_idx < 0) || (sub_idx >= (int)data->submesh_count)) {
         /* No strip data or strips disabled — standard DrawMesh path */
         unsigned int saved = mesh.vaoId;
         mesh.vaoId = 0;
@@ -578,29 +752,28 @@ void dcMeshDraw(Mesh mesh, Material material, Matrix transform) {
     }
 
     /* Draw only the submesh corresponding to this mesh */
-    int sub_idx = DCMESH_SUBMESH_INDEX(mesh.vaoId);
-    if (sub_idx >= 0 && sub_idx < (int)data->submesh_count) {
-        dcDrawSubmesh(&data->submeshes[sub_idx], material, transform);
-    }
+    dcDrawSubmesh(&data->submeshes[sub_idx], material, transform);
 }
 
 /* -------------------------------------------------------------------
  * Public API: Unload model's DCMesh data
  * ---------------------------------------------------------------- */
 void dcMeshUnloadModel(Model *model) {
-    if (!model) return;
+    if (!model || !model->meshes || (model->meshCount <= 0)) return;
 
     for (int i = 0; i < model->meshCount; i++) {
         unsigned int vaoId = model->meshes[i].vaoId;
         if (DCMESH_IS_REGISTRY_ID(vaoId)) {
-            DCMeshData* data = dcRegistryGet(vaoId);
-            if (data) {
-                dcFreeData(data);
-                dcRegistryRemove(vaoId);
-            }
+            dcRegistryRelease(vaoId);
             model->meshes[i].vaoId = 0;
         }
     }
+}
+
+void dcMeshUnloadMesh(Mesh *mesh) {
+    if (!mesh || !DCMESH_IS_REGISTRY_ID(mesh->vaoId)) return;
+    dcRegistryRelease(mesh->vaoId);
+    mesh->vaoId = 0;
 }
 
 /* -------------------------------------------------------------------
@@ -650,34 +823,38 @@ static void dcMeshSyncFromRaylib(Mesh *mesh) {
     if (!sm->vertex_map) return;
 
     int rl_vc = mesh->vertexCount;
+    uint32_t source_vc = dcRegistrySourceVertexCount(mesh->vaoId);
+    if ((rl_vc <= 0) || (source_vc == 0) || ((uint32_t)rl_vc < source_vc)) return;
 
     /* Sync positions if available */
     if (mesh->vertices) {
         float *verts = mesh->vertices;
         for (uint32_t v = 0; v < sm->vertex_count; v++) {
             int si = sm->vertex_map[v];
-            if (si >= rl_vc) si = si % rl_vc;
             sm->vertices[v].x = verts[si * 3 + 0];
             sm->vertices[v].y = verts[si * 3 + 1];
             sm->vertices[v].z = verts[si * 3 + 2];
         }
     }
 
-    /* Sync colors if available (RGBA -> BGRA conversion) */
+    /* Sync colors in the Dreamcast-native packed BGRA producer layout.
+       Raylib allocations are word-aligned; custom public Mesh buffers need
+       the alignment-safe fallback. The standard hot path remains one word
+       load/store and neither path performs a channel conversion. */
     if (mesh->colors) {
-        unsigned char *cols = mesh->colors;
-        for (uint32_t v = 0; v < sm->vertex_count; v++) {
-            int si = sm->vertex_map[v];
-            if (si >= rl_vc) si = si % rl_vc;
-            unsigned char r = cols[si * 4 + 0];
-            unsigned char g = cols[si * 4 + 1];
-            unsigned char b = cols[si * 4 + 2];
-            unsigned char a = cols[si * 4 + 3];
-            // TODO: revert red/blue swap once I have this figured out
-            sm->vertices[v].color = ((uint32_t)a << 24) |
-                                    ((uint32_t)b << 16) | // was r
-                                    ((uint32_t)g << 8)  |
-                                    ((uint32_t)r << 0);   // was b
+        const uint32_t n = sm->vertex_count;
+        if ((((uintptr_t)mesh->colors) & (sizeof(uint32_t) - 1u)) == 0u) {
+            const uint32_t *cols = (const uint32_t *)mesh->colors;
+            for (uint32_t v = 0; v < n; v++) {
+                int si = sm->vertex_map[v];
+                sm->vertices[v].color = cols[si];
+            }
+        } else {
+            const unsigned char *cols = mesh->colors;
+            for (uint32_t v = 0; v < n; v++) {
+                const unsigned char *src = cols + (size_t)sm->vertex_map[v]*4u;
+                sm->vertices[v].color = dcMeshUnalignedColorWord(src);
+            }
         }
     }
 
@@ -707,19 +884,25 @@ void dcMeshSyncColors(Mesh *mesh) {
     if (!sm->vertex_map) return;
 
     const int rl_vc = mesh->vertexCount;
-    /* Word-copy the packed RGBA: on little-endian, byte0|byte1<<8|byte2<<16|
-       byte3<<24 IS the in-memory uint32 (same packing dcMeshSyncFromRaylib
-       documents). mesh->colors is MemAlloc'd -> 4-aligned; si*4 keeps it so.
-       GCC's bswap pass refuses to merge the byte loads itself on this
-       STRICT_ALIGNMENT target. Hoist vertex_count too: the color stores are
-       uint32 like the field, so TBAA reloads the bound every iteration. */
-    const uint32_t *colw = (const uint32_t *)mesh->colors;
+    const uint32_t source_vc = dcRegistrySourceVertexCount(mesh->vaoId);
+    if ((rl_vc <= 0) || (source_vc == 0) || ((uint32_t)rl_vc < source_vc)) return;
+    /* Hoist both the loop bound and alignment decision. Normal raylib colors
+       are aligned and retain the single native packed-word copy. A custom
+       byte buffer may be unaligned; assemble the identical little-endian word
+       only on that cold path so SH4 never performs an unaligned uint32 load. */
     const uint32_t n = sm->vertex_count;
-
-    for (uint32_t v = 0; v < n; v++) {
-        int si = sm->vertex_map[v];
-        if (si >= rl_vc) si = si % rl_vc;
-        sm->vertices[v].color = colw[si];
+    if ((((uintptr_t)mesh->colors) & (sizeof(uint32_t) - 1u)) == 0u) {
+        const uint32_t *colw = (const uint32_t *)mesh->colors;
+        for (uint32_t v = 0; v < n; v++) {
+            int si = sm->vertex_map[v];
+            sm->vertices[v].color = colw[si];
+        }
+    } else {
+        const unsigned char *cols = mesh->colors;
+        for (uint32_t v = 0; v < n; v++) {
+            const unsigned char *src = cols + (size_t)sm->vertex_map[v]*4u;
+            sm->vertices[v].color = dcMeshUnalignedColorWord(src);
+        }
     }
 
     /* Patch the live triangle-expanded cache(s): same walk as dcBatchBuildCache,
@@ -766,7 +949,7 @@ int dcMeshHandleUpload(Mesh *mesh, bool dynamic) {
  * (dx, dy, dz) values you pass to recenter_model_geometry().
  * ---------------------------------------------------------------- */
 void dcMeshRecenterGeometry(Model *model, float offsetX, float offsetY, float offsetZ) {
-    if (!model) return;
+    if (!model || !model->meshes || (model->meshCount <= 0)) return;
 
     for (int i = 0; i < model->meshCount; i++) {
         DCMeshData* data = dcRegistryGet(model->meshes[i].vaoId);
@@ -787,19 +970,14 @@ void dcMeshRecenterGeometry(Model *model, float offsetX, float offsetY, float of
 }
 
 /* -------------------------------------------------------------------
- * Public API: Safe UploadMesh wrapper
+ * Public API: compatibility UploadMesh wrapper
  *
- * Temporarily clears vaoId so UploadMesh doesn't warn about
- * "trying to re-load an already loaded mesh", then restores it.
- * Use this instead of UploadMesh() in your game code for meshes
- * that have dcmesh strip data.
+ * Tagged meshes take UploadMesh's DCMesh synchronization hook; ordinary
+ * meshes take the regular upload path.
  * ---------------------------------------------------------------- */
 void dcMeshUploadSafe(Mesh *mesh, bool dynamic) {
     if (!mesh) return;
-    unsigned int saved = mesh->vaoId;
-    mesh->vaoId = 0;
     UploadMesh(mesh, dynamic);
-    mesh->vaoId = saved;
 }
 
-#endif /* PLATFORM_DREAMCAST */
+#endif /* PLATFORM_DREAMCAST || DREAMCAST */

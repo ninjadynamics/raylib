@@ -20,7 +20,7 @@
 /* -------------------------------------------------------------------
  * File format magic and version
  * ---------------------------------------------------------------- */
-#define DCMESH_MAGIC      0x4D434431  /* "DCM1" in little-endian */
+#define DCMESH_MAGIC      0x4D434431  /* Little-endian bytes: "1DCM" */
 #define DCMESH_VERSION    2           /* v2: added vertex_map */
 
 /* -------------------------------------------------------------------
@@ -50,7 +50,7 @@ typedef struct {
  * Per-submesh header — one material = one submesh
  * ---------------------------------------------------------------- */
 typedef struct {
-    uint32_t material_index;    /* Index into the model's material array */
+    uint32_t material_index;    /* Source glTF index; raylib loads it at index + 1 */
     uint32_t vertex_count;      /* Total vertices in this submesh */
     uint32_t strip_count;       /* Number of triangle strips */
     uint32_t is_opaque;         /* 1 = opaque (Patch E eligible), 0 = translucent */

@@ -66,7 +66,7 @@ typedef struct {
     /* Current draw state for compatibility checking */
     int mode;                      /* RL_QUADS or RL_TRIANGLES        */
     unsigned int textureId;        /* currently bound texture         */
-    int active;                    /* are we inside a captured begin? */
+    int active;                    /* 1 = captured area, -1 = discard */
 
     /* Deferred unbind (Patch D) */
     int pendingUnbind;             /* rlSetTexture(0) was deferred    */
@@ -78,6 +78,11 @@ typedef struct {
     /* Last texture actually submitted to GL — avoids redundant binds */
     unsigned int lastFlushedTexId;
     int lastFlushedTexValid;        /* false until first flush */
+
+    /* rlgl framebuffer bookkeeping remains meaningful even though GLdc has
+     * no FBO objects: it describes the current viewport-sized draw target. */
+    int framebufferWidth, framebufferHeight;
+    float lineWidth;
 
     /* Stats (optional, compile with -DRLDC_ENABLE_STATS) */
 #ifdef RLDC_ENABLE_STATS
@@ -104,7 +109,41 @@ static RlDcBatch rlDcBatch = {
     .curR = 255, .curG = 255, .curB = 255, .curA = 255,
     .lastFlushedTexId = 0,
     .lastFlushedTexValid = 0,
+    .framebufferWidth = 0,
+    .framebufferHeight = 0,
+    .lineWidth = 1.0f,
 };
+
+static inline void rlDcResetState(void)
+{
+    rlDcBatch.count = 0;
+    rlDcBatch.mode = -1;
+    rlDcBatch.textureId = 0;
+    rlDcBatch.active = 0;
+    rlDcBatch.pendingUnbind = 0;
+    rlDcBatch.curU = 0.0f;
+    rlDcBatch.curV = 0.0f;
+    rlDcBatch.curR = 255;
+    rlDcBatch.curG = 255;
+    rlDcBatch.curB = 255;
+    rlDcBatch.curA = 255;
+    rlDcBatch.lastFlushedTexId = 0;
+    rlDcBatch.lastFlushedTexValid = 0;
+    rlDcBatch.framebufferWidth = 0;
+    rlDcBatch.framebufferHeight = 0;
+    rlDcBatch.lineWidth = 1.0f;
+#ifdef RLDC_ENABLE_STATS
+    rlDcBatch.statFlushes = 0;
+    rlDcBatch.statFlushTexChange = 0;
+    rlDcBatch.statFlushModeChange = 0;
+    rlDcBatch.statFlushMatrixChange = 0;
+    rlDcBatch.statFlushCapacity = 0;
+    rlDcBatch.statFlushExplicit = 0;
+    rlDcBatch.statFlushStateChange = 0;
+    rlDcBatch.statTotalVertices = 0;
+    rlDcBatch.statCancelledUnbinds = 0;
+#endif
+}
 
 /* -------------------------------------------------------------------
  * Stats helpers
@@ -190,7 +229,7 @@ static void rlDcFlushBatch(void)
     glEnableClientState(GL_VERTEX_ARRAY);
     glEnableClientState(GL_TEXTURE_COORD_ARRAY);
     glEnableClientState(GL_COLOR_ARRAY);
-    glDisableClientState(GL_NORMAL_ARRAY);  /* Skip normals for speed */
+    glDisableClientState(GL_NORMAL_ARRAY);  /* Hot P+UV+BGRA GLdc lane */
 
     glVertexPointer(3, GL_FLOAT, stride, &buf[0].x);
     glTexCoordPointer(2, GL_FLOAT, stride, &buf[0].u);
@@ -279,23 +318,51 @@ static void rlDcSetTexture(unsigned int id)
  * rlDcEnd:   Do nothing — keep the batch open for the next draw.
  *            The batch only flushes on correctness boundaries.
  * ---------------------------------------------------------------- */
+/* Keep unsupported primitive handling out of the area-geometry hot path.
+ * RL_LINES records no vertices, so arbitrarily large wire helpers stay safe. */
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((cold, noinline))
+#endif
+static int rlDcBeginUnsupported(int mode)
+{
+    if (mode == RL_LINES) {
+        rlDcBatch.active = -1;
+        return 1;
+    }
+
+    rlDcFlushBatch();
+    if (rlDcBatch.pendingUnbind) {
+        rlDcBatch.pendingUnbind = 0;
+        glDisable(GL_TEXTURE_2D);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        rlDcBatch.textureId = 0;
+        rlDcBatch.lastFlushedTexValid = 0;
+    }
+    return 0;
+}
+
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((cold, noinline))
+#endif
+static void rlDcCommitPendingUnbind(void)
+{
+    if (rlDcBatch.count > 0) {
+        RLDC_STAT_INC(statFlushTexChange);
+        rlDcFlushBatch();
+    }
+    rlDcBatch.pendingUnbind = 0;
+    rlDcBatch.textureId = 0;
+}
+
 static int rlDcBegin(int mode)
 {
-    /* Only capture quads and triangles — let lines/points fall through
-     * to the original GL path */
-    if (mode != RL_QUADS && mode != RL_TRIANGLES) {
-        /* Flush anything pending before non-captured mode */
-        rlDcFlushBatch();
-        /* Resolve any pending unbind before falling through */
-        if (rlDcBatch.pendingUnbind) {
-            rlDcBatch.pendingUnbind = 0;
-            glDisable(GL_TEXTURE_2D);
-            glBindTexture(GL_TEXTURE_2D, 0);
-            rlDcBatch.textureId = 0;
-            rlDcBatch.lastFlushedTexValid = 0;  /* GL state changed outside batcher */
-        }
-        return 0; /* Not captured — caller should do the real glBegin */
-    }
+    if (__builtin_expect((mode != RL_QUADS) && (mode != RL_TRIANGLES), 0))
+        return rlDcBeginUnsupported(mode);
+
+    /* A still-pending zero texture means this is genuinely untextured; the
+     * common same-texture case cancels it in rlDcSetTexture() before Begin. */
+    if (__builtin_expect(rlDcBatch.pendingUnbind != 0, 0))
+        rlDcCommitPendingUnbind();
 
     /* Flush if mode changed */
     if (rlDcBatch.count > 0 && rlDcBatch.mode != mode) {
@@ -309,15 +376,6 @@ static int rlDcBegin(int mode)
     if (rlDcBatch.count >= RLDC_BATCH_CAPACITY) {
         RLDC_STAT_INC(statFlushCapacity);
         rlDcFlushBatch();
-    }
-
-    /* Resolve pending unbind if texture context genuinely needs 0 */
-    if (rlDcBatch.pendingUnbind && rlDcBatch.count == 0) {
-        /* If batch is empty and we have a pending unbind, the next
-         * draw might set a new texture anyway, so just clear the
-         * flag and let rlDcSetTexture handle it */
-        rlDcBatch.pendingUnbind = 0;
-        rlDcBatch.textureId = 0;
     }
 
     rlDcBatch.mode = mode;
@@ -349,9 +407,9 @@ static inline void rlDcFlushOnMatrixChange(void)
 /* -------------------------------------------------------------------
  * GL state change flush trigger
  *
- * Any GL state operation (blend, depth, cull, scissor, etc.) must
- * flush the batch because GLdc builds poly-headers from current state.
- * Also invalidates lastFlushedTex since GL state is now different.
+ * Any non-texture GL state operation (blend, depth, cull, scissor, etc.)
+ * must flush because GLdc builds poly-headers from current state.  Texture
+ * binding is unchanged, so keeping that cache valid avoids a redundant bind.
  * ---------------------------------------------------------------- */
 static inline void rlDcFlushOnStateChange(void)
 {
@@ -359,7 +417,6 @@ static inline void rlDcFlushOnStateChange(void)
         RLDC_STAT_INC(statFlushStateChange);
         rlDcFlushBatch();
     }
-    rlDcBatch.lastFlushedTexValid = 0;
 }
 
 /* -------------------------------------------------------------------
@@ -382,6 +439,46 @@ static void rlDcFlushAll(void)
         rlDcBatch.lastFlushedTexValid = 0;  /* GL state changed outside batcher */
     }
 }
+
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((cold, noinline, unused))
+#endif
+static void rlDcResolvePendingUnbind(void)
+{
+    rlDcFlushAll();
+}
+
+/* A direct texture bind supersedes a deferred unbind. Flush queued geometry,
+ * then let the caller perform exactly one final bind; never emit the losing
+ * disable+bind(0) state immediately before the winning texture state. */
+static inline void rlDcExternalTextureBarrier(void)
+{
+    if (rlDcBatch.count > 0) {
+        RLDC_STAT_INC(statFlushExplicit);
+        rlDcFlushBatch();
+    }
+    rlDcBatch.pendingUnbind = 0;
+}
+
+/* A queued immediate batch installs its own client arrays, so submit it before
+ * accepting caller pointers. Deferred texture state is independent and stays
+ * coalescible until the direct draw or texture call. */
+static inline void rlDcClientArrayBarrier(void)
+{
+    if (rlDcBatch.count > 0) {
+        RLDC_STAT_INC(statFlushExplicit);
+        rlDcFlushBatch();
+    }
+}
+
+/* Cold resource/state APIs may mutate texture state without a replacement
+ * bind. Resolve everything and invalidate the cache conservatively. */
+static inline void rlDcExternalStateBarrier(void)
+{
+    rlDcFlushAll();
+    rlDcBatch.lastFlushedTexValid = 0;
+}
+
 
 #endif /* PLATFORM_DREAMCAST */
 #endif /* RLGL_DC_BATCH_H */

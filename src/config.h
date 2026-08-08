@@ -275,8 +275,11 @@
 
 
 // Enable partial support for clipboard image, only working on SDL3 or
-// being on both Windows OS + GLFW or Windows OS + RGFW
-#define SUPPORT_CLIPBOARD_IMAGE    1
+// being on both Windows OS + GLFW or Windows OS + RGFW. Dreamcast provides
+// an ABI-compatible empty-image stub without pulling unused decoders in.
+#if !defined(PLATFORM_DREAMCAST)
+    #define SUPPORT_CLIPBOARD_IMAGE    1
+#endif
 
 #if defined(SUPPORT_CLIPBOARD_IMAGE)
     #ifndef STBI_REQUIRED

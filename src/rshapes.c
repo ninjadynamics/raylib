@@ -58,9 +58,6 @@
 #include <math.h>       // Required for: sinf(), asinf(), cosf(), acosf(), sqrtf(), fabsf()
 #include <float.h>      // Required for: FLT_EPSILON
 #include <stdlib.h>     // Required for: RL_FREE
-#if defined(PLATFORM_DREAMCAST) || defined(PLATFORM_NINTENDO64)
-#include "utils.h"                  // Required for: TRACELOG() macros used when i was testing on Dreamcast
-#endif
 //----------------------------------------------------------------------------------
 // Defines and Macros
 //----------------------------------------------------------------------------------
