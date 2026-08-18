@@ -22,6 +22,7 @@
 #if defined(PLATFORM_DREAMCAST)
 
 #include <GL/gl.h>
+#include <GL/glkos.h>
 #include <string.h>
 
 /* -------------------------------------------------------------------
@@ -244,7 +245,8 @@ static void rlDcFlushBatch(void)
     /* The big payoff: one draw call for potentially hundreds of
      * raylib helper calls that would otherwise be individual
      * glBegin/glEnd pairs. */
-    glDrawArrays(glMode, 0, rlDcBatch.count);
+    if (glMode == GL_TRIANGLES) glKosDrawTrianglesArrays(0, rlDcBatch.count);
+    else glDrawArrays(glMode, 0, rlDcBatch.count);
 
     glDisableClientState(GL_COLOR_ARRAY);
     glDisableClientState(GL_TEXTURE_COORD_ARRAY);

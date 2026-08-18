@@ -708,7 +708,7 @@ static void dcDrawSubmesh(DCSubmesh* sm, Material material, Matrix transform) {
      * concat per strip (F22: 192 strips/frame) and routed through GLdc's
      * generic generator. Chunked to bound the stack arrays. */
     {
-        enum { DC_STRIP_CHUNK = 64 };
+        enum { DC_STRIP_CHUNK = 128 };
         GLint   firsts[DC_STRIP_CHUNK];
         GLsizei counts[DC_STRIP_CHUNK];
         uint32_t si = 0;

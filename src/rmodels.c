@@ -1536,7 +1536,8 @@ void UpdateMeshBuffer(Mesh mesh, int index, const void *data, int dataSize, int 
         return;
     }
 
-    memcpy((unsigned char *)target + offset, data, (size_t)dataSize);
+    void *destination = (unsigned char *)target + offset;
+    if (destination != data) memcpy(destination, data, (size_t)dataSize);
 #if defined(ENABLE_STRIPS)
     if (index == RL_DEFAULT_SHADER_ATTRIB_LOCATION_COLOR) dcMeshSyncColors(&mesh);
     else dcMeshHandleUpload(&mesh, false);
@@ -1574,7 +1575,7 @@ void DrawMesh(Mesh mesh, Material material, Matrix transform)
     glVertexPointer(3, GL_FLOAT, 0, mesh.vertices);
     if (mesh.texcoords != NULL) glEnableClientState(GL_TEXTURE_COORD_ARRAY);
     glTexCoordPointer(2, GL_FLOAT, 0, mesh.texcoords);
-    if (mesh.normals != NULL) {
+    if (mesh.normals != NULL && glIsEnabled(GL_LIGHTING)) {
         glEnableClientState(GL_NORMAL_ARRAY);
         glNormalPointer(GL_FLOAT, 0, mesh.normals);
     }
