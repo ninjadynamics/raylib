@@ -1565,10 +1565,7 @@ void rlNormal3f(float x, float y, float z)
 void rlColor4ub(unsigned char r, unsigned char g, unsigned char b, unsigned char a)
 {
 #if defined(PLATFORM_DREAMCAST)
-    rlDcBatch.curR = r;
-    rlDcBatch.curG = g;
-    rlDcBatch.curB = b;
-    rlDcBatch.curA = a;
+    rlDcBatch.curBGRA = rlDcPackBGRA(r, g, b, a);
     if (rlDcBatch.active) return;
 #endif
     glColor4ub(r, g, b, a);
@@ -1577,10 +1574,9 @@ void rlColor4ub(unsigned char r, unsigned char g, unsigned char b, unsigned char
 void rlColor3f(float x, float y, float z)
 {
 #if defined(PLATFORM_DREAMCAST)
-    rlDcBatch.curR = (unsigned char)(x * 255.0f);
-    rlDcBatch.curG = (unsigned char)(y * 255.0f);
-    rlDcBatch.curB = (unsigned char)(z * 255.0f);
-    rlDcBatch.curA = 255;
+    rlDcBatch.curBGRA = rlDcPackBGRA((unsigned char)(x * 255.0f),
+                                     (unsigned char)(y * 255.0f),
+                                     (unsigned char)(z * 255.0f), 255);
     if (rlDcBatch.active) return;
 #endif
     glColor3f(x, y, z);
@@ -1589,10 +1585,10 @@ void rlColor3f(float x, float y, float z)
 void rlColor4f(float x, float y, float z, float w)
 {
 #if defined(PLATFORM_DREAMCAST)
-    rlDcBatch.curR = (unsigned char)(x * 255.0f);
-    rlDcBatch.curG = (unsigned char)(y * 255.0f);
-    rlDcBatch.curB = (unsigned char)(z * 255.0f);
-    rlDcBatch.curA = (unsigned char)(w * 255.0f);
+    rlDcBatch.curBGRA = rlDcPackBGRA((unsigned char)(x * 255.0f),
+                                     (unsigned char)(y * 255.0f),
+                                     (unsigned char)(z * 255.0f),
+                                     (unsigned char)(w * 255.0f));
     if (rlDcBatch.active) return;
 #endif
     glColor4f(x, y, z, w);

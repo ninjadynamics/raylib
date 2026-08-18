@@ -52,8 +52,17 @@
 typedef struct {
     float x, y, z;            /* 12 bytes — position                 */
     float u, v;               /*  8 bytes — texcoord                 */
-    unsigned char b, g, r, a; /*  4 bytes — color in BGRA byte order */
+    unsigned int bgra;        /*  4 bytes — color word, BGRA byte order
+                                 (little-endian: b|g<<8|r<<16|a<<24) */
 } RlDcBatchVertex;
+
+/* Pack semantic RGBA into the physical BGRA color word once, at rlColor time,
+ * so the per-vertex append is a single word load + store instead of four byte
+ * loads re-swizzled per vertex (~25% of the append's instruction count). */
+static inline unsigned int rlDcPackBGRA(unsigned char r, unsigned char g, unsigned char b, unsigned char a)
+{
+    return (unsigned int)b | ((unsigned int)g << 8) | ((unsigned int)r << 16) | ((unsigned int)a << 24);
+}
 
 /* -------------------------------------------------------------------
  * Batcher state
@@ -73,7 +82,7 @@ typedef struct {
 
     /* Current vertex attributes (set by rlTexCoord/rlColor/rlNormal) */
     float curU, curV;
-    unsigned char curR, curG, curB, curA;
+    unsigned int curBGRA;          /* pre-packed color word (rlDcPackBGRA) */
 
     /* Last texture actually submitted to GL — avoids redundant binds */
     unsigned int lastFlushedTexId;
@@ -106,7 +115,7 @@ static RlDcBatch rlDcBatch = {
     .active = 0,
     .pendingUnbind = 0,
     .curU = 0.0f, .curV = 0.0f,
-    .curR = 255, .curG = 255, .curB = 255, .curA = 255,
+    .curBGRA = 0xFFFFFFFFu,
     .lastFlushedTexId = 0,
     .lastFlushedTexValid = 0,
     .framebufferWidth = 0,
@@ -123,10 +132,7 @@ static inline void rlDcResetState(void)
     rlDcBatch.pendingUnbind = 0;
     rlDcBatch.curU = 0.0f;
     rlDcBatch.curV = 0.0f;
-    rlDcBatch.curR = 255;
-    rlDcBatch.curG = 255;
-    rlDcBatch.curB = 255;
-    rlDcBatch.curA = 255;
+    rlDcBatch.curBGRA = 0xFFFFFFFFu;
     rlDcBatch.lastFlushedTexId = 0;
     rlDcBatch.lastFlushedTexValid = 0;
     rlDcBatch.framebufferWidth = 0;
@@ -233,7 +239,7 @@ static void rlDcFlushBatch(void)
 
     glVertexPointer(3, GL_FLOAT, stride, &buf[0].x);
     glTexCoordPointer(2, GL_FLOAT, stride, &buf[0].u);
-    glColorPointer(GL_BGRA, GL_UNSIGNED_BYTE, stride, &buf[0].b);
+    glColorPointer(GL_BGRA, GL_UNSIGNED_BYTE, stride, &buf[0].bgra);
 
     /* The big payoff: one draw call for potentially hundreds of
      * raylib helper calls that would otherwise be individual
@@ -267,10 +273,7 @@ static inline void rlDcAppendVertex(float x, float y, float z)
     v->z = z;
     v->u = rlDcBatch.curU;
     v->v = rlDcBatch.curV;
-    v->r = rlDcBatch.curR;
-    v->g = rlDcBatch.curG;
-    v->b = rlDcBatch.curB;
-    v->a = rlDcBatch.curA;
+    v->bgra = rlDcBatch.curBGRA;
 }
 
 /* -------------------------------------------------------------------

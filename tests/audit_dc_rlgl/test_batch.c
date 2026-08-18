@@ -187,18 +187,18 @@ int main(void)
     assert(boundTexture == 9 && zeroBindCount == 0);
     assert(!rlDcBatch.pendingUnbind);
 
-    /* Semantic rlColor RGBA lands directly in physical native BGRA bytes. */
+    /* Semantic rlColor RGBA lands directly in physical native BGRA bytes:
+     * r=0x11 g=0x22 b=0x33 a=0x44 packs to the little-endian word 0x44112233
+     * (byte order in memory: b, g, r, a). */
     resetHarness();
-    rlDcBatch.curR = 0x11;
-    rlDcBatch.curG = 0x22;
-    rlDcBatch.curB = 0x33;
-    rlDcBatch.curA = 0x44;
+    rlDcBatch.curBGRA = rlDcPackBGRA(0x11, 0x22, 0x33, 0x44);
     assert(rlDcBegin(RL_TRIANGLES));
     rlDcAppendVertex(0.0f, 0.0f, 0.0f);
-    assert(rlDcBatch.verts[0].b == 0x33);
-    assert(rlDcBatch.verts[0].g == 0x22);
-    assert(rlDcBatch.verts[0].r == 0x11);
-    assert(rlDcBatch.verts[0].a == 0x44);
+    assert(rlDcBatch.verts[0].bgra == 0x44112233u);
+    assert(((const unsigned char *)&rlDcBatch.verts[0].bgra)[0] == 0x33);
+    assert(((const unsigned char *)&rlDcBatch.verts[0].bgra)[1] == 0x22);
+    assert(((const unsigned char *)&rlDcBatch.verts[0].bgra)[2] == 0x11);
+    assert(((const unsigned char *)&rlDcBatch.verts[0].bgra)[3] == 0x44);
 
     /* Cold external state work still resolves an unbind conservatively. */
     resetHarness();
