@@ -23,7 +23,25 @@
 
 #include <GL/gl.h>
 #include <GL/glkos.h>
+#include <stddef.h>
 #include <string.h>
+
+/* Parent builds can turn off only the new handoff while retaining the same
+ * GLdc/raylib sources, which gives hardware A/B runs an attribution-safe
+ * fallback binary. */
+#ifndef RLDC_USE_INTERLEAVED_FAST_PATH
+#define RLDC_USE_INTERLEAVED_FAST_PATH 1
+#endif
+
+#if RLDC_USE_INTERLEAVED_FAST_PATH && \
+    defined(GL_KOS_HAS_INTERLEAVED_P3T2BGRA) && \
+    defined(GL_KOS_FAST_PATH_ABI_VERSION) && \
+    (GL_KOS_HAS_INTERLEAVED_P3T2BGRA != 0) && \
+    (GL_KOS_FAST_PATH_ABI_VERSION == 1u)
+#define RLDC_HAS_INTERLEAVED_P3T2BGRA 1
+#else
+#define RLDC_HAS_INTERLEAVED_P3T2BGRA 0
+#endif
 
 /* -------------------------------------------------------------------
  * Configuration
@@ -50,12 +68,25 @@
  *   color:    GL_BGRA x GL_UNSIGNED_BYTE (BGRA byte order)
  * Total: 24 bytes per vertex, no padding needed.
  * ---------------------------------------------------------------- */
+#if RLDC_HAS_INTERLEAVED_P3T2BGRA
+typedef GLKosVertexP3T2BGRA RlDcBatchVertex;
+#else
 typedef struct {
     float x, y, z;            /* 12 bytes — position                 */
     float u, v;               /*  8 bytes — texcoord                 */
     unsigned int bgra;        /*  4 bytes — color word, BGRA byte order
                                  (little-endian: b|g<<8|r<<16|a<<24) */
 } RlDcBatchVertex;
+#endif
+
+typedef char RlDcBatchVertexSizeMustBe24[
+    sizeof(RlDcBatchVertex) == 24 ? 1 : -1];
+typedef char RlDcBatchVertexPositionMustStartAt0[
+    offsetof(RlDcBatchVertex, x) == 0 ? 1 : -1];
+typedef char RlDcBatchVertexUvMustStartAt12[
+    offsetof(RlDcBatchVertex, u) == 12 ? 1 : -1];
+typedef char RlDcBatchVertexColorMustStartAt20[
+    offsetof(RlDcBatchVertex, bgra) == 20 ? 1 : -1];
 
 /* Pack semantic RGBA into the physical BGRA color word once, at rlColor time,
  * so the per-vertex append is a single word load + store instead of four byte
@@ -105,24 +136,14 @@ typedef struct {
     unsigned int statFlushStateChange;
     unsigned int statTotalVertices;
     unsigned int statCancelledUnbinds;
+    unsigned int statInterleavedHits;
+    unsigned int statInterleavedFallbacks;
 #endif
 } RlDcBatch;
 
-/* Single global batcher instance */
-static RlDcBatch rlDcBatch = {
-    .count = 0,
-    .mode = -1,
-    .textureId = 0,
-    .active = 0,
-    .pendingUnbind = 0,
-    .curU = 0.0f, .curV = 0.0f,
-    .curBGRA = 0xFFFFFFFFu,
-    .lastFlushedTexId = 0,
-    .lastFlushedTexValid = 0,
-    .framebufferWidth = 0,
-    .framebufferHeight = 0,
-    .lineWidth = 1.0f,
-};
+/* Single global batcher instance. Keep the 100 KB vertex arena in .bss;
+ * rlDcResetState() is the authoritative initializer for non-zero defaults. */
+static RlDcBatch rlDcBatch;
 
 static inline void rlDcResetState(void)
 {
@@ -149,6 +170,8 @@ static inline void rlDcResetState(void)
     rlDcBatch.statFlushStateChange = 0;
     rlDcBatch.statTotalVertices = 0;
     rlDcBatch.statCancelledUnbinds = 0;
+    rlDcBatch.statInterleavedHits = 0;
+    rlDcBatch.statInterleavedFallbacks = 0;
 #endif
 }
 
@@ -157,19 +180,6 @@ static inline void rlDcResetState(void)
  * ---------------------------------------------------------------- */
 #ifdef RLDC_ENABLE_STATS
 #define RLDC_STAT_INC(f)  (rlDcBatch.f++)
-static void rlDcPrintStats(void) {
-    printf("[rlDC] flushes=%u tex=%u mode=%u mtx=%u state=%u cap=%u expl=%u verts=%u "
-           "unbinds_cancelled=%u\n",
-           rlDcBatch.statFlushes,
-           rlDcBatch.statFlushTexChange,
-           rlDcBatch.statFlushModeChange,
-           rlDcBatch.statFlushMatrixChange,
-           rlDcBatch.statFlushStateChange,
-           rlDcBatch.statFlushCapacity,
-           rlDcBatch.statFlushExplicit,
-           rlDcBatch.statTotalVertices,
-           rlDcBatch.statCancelledUnbinds);
-}
 static void rlDcResetStats(void) {
     rlDcBatch.statFlushes = 0;
     rlDcBatch.statFlushTexChange = 0;
@@ -180,20 +190,20 @@ static void rlDcResetStats(void) {
     rlDcBatch.statFlushExplicit = 0;
     rlDcBatch.statTotalVertices = 0;
     rlDcBatch.statCancelledUnbinds = 0;
+    rlDcBatch.statInterleavedHits = 0;
+    rlDcBatch.statInterleavedFallbacks = 0;
 }
 #else
 #define RLDC_STAT_INC(f)  ((void)0)
-__attribute__((unused)) static void rlDcPrintStats(void) {}
 __attribute__((unused)) static void rlDcResetStats(void) {}
 #endif
 
 /* -------------------------------------------------------------------
  * Core: Flush the batcher
  *
- * Submits all accumulated vertices to GLdc as a single glDrawArrays
- * call using client arrays. This feeds directly into GLdc's
- * generateArraysFastPath_QUADS / _TRIS, which is the best-case
- * submission path.
+ * Submits all accumulated vertices to GLdc in one call. A paired GLdc first
+ * receives the typed borrowed-input lane; an older or ineligible pair takes
+ * the exact client-array fallback below.
  * ---------------------------------------------------------------- */
 static void rlDcFlushBatch(void)
 {
@@ -223,6 +233,19 @@ static void rlDcFlushBatch(void)
         rlDcBatch.lastFlushedTexValid = 1;
     }
 
+#if RLDC_HAS_INTERLEAVED_P3T2BGRA
+    /* The paired GLdc lane consumes this borrowed stream before returning and
+     * does not disturb client-array state. GLdc alone decides eligibility; a
+     * false return leaves render/list/header/capture state untouched. */
+    if (glKosTryDrawInterleavedP3T2BGRA(glMode, rlDcBatch.verts,
+                                        rlDcBatch.count)) {
+        RLDC_STAT_INC(statInterleavedHits);
+        rlDcBatch.count = 0;
+        return;
+    }
+    RLDC_STAT_INC(statInterleavedFallbacks);
+#endif
+
     /* Set up client arrays pointing into our interleaved buffer.
      * Stride = sizeof(RlDcBatchVertex) = 24 bytes.
      * This layout satisfies GLdc's fast-path requirements:
@@ -245,8 +268,15 @@ static void rlDcFlushBatch(void)
     /* The big payoff: one draw call for potentially hundreds of
      * raylib helper calls that would otherwise be individual
      * glBegin/glEnd pairs. */
+#if RLDC_HAS_INTERLEAVED_P3T2BGRA
+    /* A declined try may mean computed radial fog or a general TnL effect.
+     * Plain glDrawArrays is the exact fallback for both primitive types; the
+     * older triangle fused lane deliberately omits those computed effects. */
+    glDrawArrays(glMode, 0, rlDcBatch.count);
+#else
     if (glMode == GL_TRIANGLES) glKosDrawTrianglesArrays(0, rlDcBatch.count);
     else glDrawArrays(glMode, 0, rlDcBatch.count);
+#endif
 
     glDisableClientState(GL_COLOR_ARRAY);
     glDisableClientState(GL_TEXTURE_COORD_ARRAY);
@@ -335,6 +365,8 @@ static int rlDcBeginUnsupported(int mode)
         return 1;
     }
 
+    if (rlDcBatch.count > 0)
+        RLDC_STAT_INC(statFlushModeChange);
     rlDcFlushBatch();
     if (rlDcBatch.pendingUnbind) {
         rlDcBatch.pendingUnbind = 0;

@@ -430,6 +430,27 @@ typedef struct rlRenderBatch {
     float currentDepth;         // Current depth value for next draw
 } rlRenderBatch;
 
+#if defined(PLATFORM_DREAMCAST) || defined(DREAMCAST)
+// Snapshot exported by the Dreamcast immediate-mode batcher when
+// RLDC_ENABLE_STATS is compiled in. The query returns false otherwise.
+#define RLDC_BATCH_STATS_VERSION 1
+typedef struct rlDcBatchStats {
+    unsigned int structSize;
+    unsigned int abiVersion;
+    unsigned int flushes;
+    unsigned int flushTextureChange;
+    unsigned int flushModeChange;
+    unsigned int flushMatrixChange;
+    unsigned int flushCapacity;
+    unsigned int flushExplicit;
+    unsigned int flushStateChange;
+    unsigned int totalVertices;
+    unsigned int cancelledUnbinds;
+    unsigned int interleavedHits;
+    unsigned int interleavedFallbacks;
+} rlDcBatchStats;
+#endif
+
 // OpenGL version
 typedef enum {
     RL_OPENGL_11 = 1,           // OpenGL 1.1
@@ -733,6 +754,10 @@ RLAPI void rlDrawRenderBatch(rlRenderBatch *batch);     // Draw render batch dat
 RLAPI void rlSetRenderBatchActive(rlRenderBatch *batch); // Set the active render batch for rlgl (NULL for default internal)
 RLAPI void rlDrawRenderBatchActive(void);               // Update and draw internal render batch
 RLAPI bool rlCheckRenderBatchLimit(int vCount);         // Check internal buffer overflow for a given number of vertex
+#if defined(PLATFORM_DREAMCAST) || defined(DREAMCAST)
+RLAPI bool rlGetDcBatchStats(rlDcBatchStats *stats, unsigned int statsSize); // Size-checked Dreamcast stats snapshot
+RLAPI void rlResetDcBatchStats(void);                    // Reset Dreamcast batch stats; no-op when disabled
+#endif
 
 RLAPI void rlSetTexture(unsigned int id);               // Set current texture for render batch and check buffers limits
 
@@ -3494,6 +3519,39 @@ void rlDrawRenderBatchActive(void)
     rlDrawRenderBatch(RLGL.currentBatch);    // NOTE: Stereo rendering is checked inside
 #endif
 }
+
+#if defined(PLATFORM_DREAMCAST)
+bool rlGetDcBatchStats(rlDcBatchStats *stats, unsigned int statsSize)
+{
+#if defined(RLDC_ENABLE_STATS)
+    if ((stats == NULL) || (statsSize < sizeof(rlDcBatchStats))) return false;
+
+    stats->structSize = sizeof(rlDcBatchStats);
+    stats->abiVersion = RLDC_BATCH_STATS_VERSION;
+    stats->flushes = rlDcBatch.statFlushes;
+    stats->flushTextureChange = rlDcBatch.statFlushTexChange;
+    stats->flushModeChange = rlDcBatch.statFlushModeChange;
+    stats->flushMatrixChange = rlDcBatch.statFlushMatrixChange;
+    stats->flushCapacity = rlDcBatch.statFlushCapacity;
+    stats->flushExplicit = rlDcBatch.statFlushExplicit;
+    stats->flushStateChange = rlDcBatch.statFlushStateChange;
+    stats->totalVertices = rlDcBatch.statTotalVertices;
+    stats->cancelledUnbinds = rlDcBatch.statCancelledUnbinds;
+    stats->interleavedHits = rlDcBatch.statInterleavedHits;
+    stats->interleavedFallbacks = rlDcBatch.statInterleavedFallbacks;
+    return true;
+#else
+    (void)stats;
+    (void)statsSize;
+    return false;
+#endif
+}
+
+void rlResetDcBatchStats(void)
+{
+    rlDcResetStats();
+}
+#endif
 
 // Check internal buffer overflow for a given number of vertex
 // and force a rlRenderBatch draw call if required

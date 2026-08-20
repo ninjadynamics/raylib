@@ -12,8 +12,17 @@
 
 #include "../../src/rlgl_dc_batch.h"
 
+#ifndef AUDIT_EXPECT_FAST
+#error "Each audit target must state whether the paired fast lane is expected"
+#endif
+#if RLDC_HAS_INTERLEAVED_P3T2BGRA != AUDIT_EXPECT_FAST
+#error "RLDC fast-lane feature/ABI gate disagrees with this test configuration"
+#endif
+
 static int drawCount;
 static int drawSizes[8];
+static int arrayDrawCount;
+static int triangleLaneCount;
 static int textureEnabled;
 static unsigned int boundTexture;
 static int textureEnableCount;
@@ -21,6 +30,36 @@ static int textureDisableCount;
 static int zeroBindCount;
 static int normalArrayEnabled;
 static int normalPointerCount;
+static int clientStateCalls;
+static int pointerCalls;
+static int fastTryCount;
+static int fastAccept;
+static GLenum fastMode;
+
+#if !defined(AUDIT_GLKOS_LEGACY)
+unsigned int glKosGetFastPathCapabilities(void)
+{
+    return GL_KOS_FAST_PATH_INTERLEAVED_P3T2BGRA;
+}
+
+GLboolean glKosTryDrawInterleavedP3T2BGRA(
+    GLenum mode, const GLKosVertexP3T2BGRA *vertices, GLsizei count)
+{
+    (void)vertices;
+    fastTryCount++;
+    fastMode = mode;
+    if (!fastAccept) return 0;
+    drawSizes[drawCount++] = count;
+    return 1;
+}
+#endif
+
+void glKosDrawTrianglesArrays(int first, GLsizei count)
+{
+    (void)first;
+    triangleLaneCount++;
+    drawSizes[drawCount++] = count;
+}
 
 void glEnable(GLenum cap)
 {
@@ -47,22 +86,24 @@ void glBindTexture(GLenum target, unsigned int texture)
 
 void glEnableClientState(GLenum cap)
 {
+    clientStateCalls++;
     if (cap == GL_NORMAL_ARRAY) normalArrayEnabled = 1;
 }
 
 void glDisableClientState(GLenum cap)
 {
+    clientStateCalls++;
     if (cap == GL_NORMAL_ARRAY) normalArrayEnabled = 0;
 }
 
 void glVertexPointer(int size, GLenum type, GLsizei stride, const void *pointer)
-{ (void)size; (void)type; (void)stride; (void)pointer; }
+{ (void)size; (void)type; (void)stride; (void)pointer; pointerCalls++; }
 
 void glTexCoordPointer(int size, GLenum type, GLsizei stride, const void *pointer)
-{ (void)size; (void)type; (void)stride; (void)pointer; }
+{ (void)size; (void)type; (void)stride; (void)pointer; pointerCalls++; }
 
 void glColorPointer(int size, GLenum type, GLsizei stride, const void *pointer)
-{ (void)size; (void)type; (void)stride; (void)pointer; }
+{ (void)size; (void)type; (void)stride; (void)pointer; pointerCalls++; }
 
 void glNormalPointer(GLenum type, GLsizei stride, const void *pointer)
 {
@@ -76,6 +117,7 @@ void glDrawArrays(GLenum mode, int first, GLsizei count)
 {
     (void)mode;
     (void)first;
+    arrayDrawCount++;
     drawSizes[drawCount++] = count;
 }
 
@@ -83,6 +125,8 @@ static void resetHarness(void)
 {
     rlDcResetState();
     drawCount = 0;
+    arrayDrawCount = 0;
+    triangleLaneCount = 0;
     textureEnabled = 0;
     boundTexture = 0;
     textureEnableCount = 0;
@@ -90,6 +134,22 @@ static void resetHarness(void)
     zeroBindCount = 0;
     normalArrayEnabled = 0;
     normalPointerCount = 0;
+    clientStateCalls = 0;
+    pointerCalls = 0;
+    fastTryCount = 0;
+    fastAccept = 1;
+    fastMode = 0;
+}
+
+static void assertFlushAccounting(void)
+{
+#ifdef RLDC_ENABLE_STATS
+    const unsigned int causes =
+        rlDcBatch.statFlushTexChange + rlDcBatch.statFlushModeChange +
+        rlDcBatch.statFlushMatrixChange + rlDcBatch.statFlushCapacity +
+        rlDcBatch.statFlushExplicit + rlDcBatch.statFlushStateChange;
+    assert(rlDcBatch.statFlushes == causes);
+#endif
 }
 
 static void triangle(void)
@@ -100,6 +160,18 @@ static void triangle(void)
     rlDcAppendVertex(0.0f, 1.0f, 0.0f);
     rlDcEnd();
 }
+
+#if RLDC_HAS_INTERLEAVED_P3T2BGRA
+static void quad(void)
+{
+    assert(rlDcBegin(RL_QUADS));
+    rlDcAppendVertex(0.0f, 0.0f, 0.0f);
+    rlDcAppendVertex(1.0f, 0.0f, 0.0f);
+    rlDcAppendVertex(1.0f, 1.0f, 0.0f);
+    rlDcAppendVertex(0.0f, 1.0f, 0.0f);
+    rlDcEnd();
+}
+#endif
 
 static void capturedVertex(float x, float y, float z)
 {
@@ -117,6 +189,51 @@ int main(void)
     rlDcFlushAll();
     assert(drawCount == 1 && drawSizes[0] == 3);
     assert(!normalArrayEnabled && normalPointerCount == 0);
+#if RLDC_HAS_INTERLEAVED_P3T2BGRA
+    assert(fastTryCount == 1);
+    assert(fastMode == GL_TRIANGLES);
+    assert(clientStateCalls == 0 && pointerCalls == 0);
+    assert(arrayDrawCount == 0 && triangleLaneCount == 0);
+    assertFlushAccounting();
+
+    resetHarness();
+    quad();
+    rlDcFlushAll();
+    assert(fastTryCount == 1);
+    assert(fastMode == GL_QUADS);
+    assert(drawCount == 1 && drawSizes[0] == 4);
+    assert(clientStateCalls == 0 && pointerCalls == 0);
+    assert(arrayDrawCount == 0 && triangleLaneCount == 0);
+    assertFlushAccounting();
+
+    /* A declined borrowed-input try must execute the complete legacy array
+     * setup and submit exactly once. */
+    resetHarness();
+    fastAccept = 0;
+    triangle();
+    rlDcFlushAll();
+    assert(fastTryCount == 1);
+    assert(drawCount == 1 && drawSizes[0] == 3);
+    assert(clientStateCalls == 7 && pointerCalls == 3);
+    assert(arrayDrawCount == 1 && triangleLaneCount == 0);
+    assertFlushAccounting();
+#else
+    assert(fastTryCount == 0);
+    assert(clientStateCalls == 7 && pointerCalls == 3);
+    assert(arrayDrawCount == 0 && triangleLaneCount == 1);
+    assertFlushAccounting();
+#endif
+
+    /* Unsupported non-line modes are a real mode boundary. Their nonempty
+     * flush must be classified so total flushes equal the cause sum. */
+    resetHarness();
+    triangle();
+    assert(!rlDcBegin(99));
+    assert(drawCount == 1 && drawSizes[0] == 3);
+#ifdef RLDC_ENABLE_STATS
+    assert(rlDcBatch.statFlushModeChange == 1);
+#endif
+    assertFlushAccounting();
 
     /* PVR-list-hazardous lines remain callable but submit no vertices and do
      * not flush or contaminate already queued area geometry. */
@@ -130,6 +247,7 @@ int main(void)
     assert(rlDcBatch.count == 3 && drawCount == 0);
     rlDcFlushAll();
     assert(drawCount == 1 && drawSizes[0] == 3);
+    assertFlushAccounting();
 
     /* Even an oversized no-op line block cannot flush scratch vertices. */
     resetHarness();
@@ -139,6 +257,7 @@ int main(void)
     rlDcEnd();
     rlDcFlushAll();
     assert(drawCount == 0 && rlDcBatch.count == 0);
+    assertFlushAccounting();
 
     /* A forced state flush inside an invalid line Begin submits only the area
      * geometry queued before it; the remaining line vertices stay discarded. */
@@ -152,6 +271,7 @@ int main(void)
     rlDcEnd();
     rlDcFlushAll();
     assert(drawCount == 1);
+    assertFlushAccounting();
 
     /* The optimized id->draw->0->same-id sequence remains one batch. */
     resetHarness();
@@ -163,6 +283,7 @@ int main(void)
     rlDcFlushAll();
     assert(drawCount == 1 && drawSizes[0] == 3);
     assert(textureEnabled && boundTexture == 7);
+    assertFlushAccounting();
 
     /* A real untextured draw is a boundary; it cannot inherit texture 7. */
     resetHarness();
@@ -174,6 +295,7 @@ int main(void)
     rlDcFlushAll();
     assert(drawCount == 2 && drawSizes[1] == 3);
     assert(!textureEnabled);
+    assertFlushAccounting();
 
     /* A direct texture bind supersedes a deferred unbind. Its barrier may
      * submit old geometry but must not emit disable+bind(0) first. */
@@ -186,6 +308,7 @@ int main(void)
     assert(textureEnableCount == 1 && textureDisableCount == 0);
     assert(boundTexture == 9 && zeroBindCount == 0);
     assert(!rlDcBatch.pendingUnbind);
+    assertFlushAccounting();
 
     /* Semantic rlColor RGBA lands directly in physical native BGRA bytes:
      * r=0x11 g=0x22 b=0x33 a=0x44 packs to the little-endian word 0x44112233
@@ -199,6 +322,7 @@ int main(void)
     assert(((const unsigned char *)&rlDcBatch.verts[0].bgra)[1] == 0x22);
     assert(((const unsigned char *)&rlDcBatch.verts[0].bgra)[2] == 0x11);
     assert(((const unsigned char *)&rlDcBatch.verts[0].bgra)[3] == 0x44);
+    assertFlushAccounting();
 
     /* Cold external state work still resolves an unbind conservatively. */
     resetHarness();
@@ -208,6 +332,7 @@ int main(void)
     rlDcExternalStateBarrier();
     assert(drawCount == 1 && !textureEnabled && boundTexture == 0);
     assert(!rlDcBatch.pendingUnbind && !rlDcBatch.lastFlushedTexValid);
+    assertFlushAccounting();
 
     return 0;
 }

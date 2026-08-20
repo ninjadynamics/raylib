@@ -18,22 +18,11 @@
 #include <GL/gl.h>
 #include <GL/glkos.h>   /* glKosDrawMultiStrips (one-call model submission) */
 
-/* These GLdc extensions predate their public glkos.h declarations. Keep exact
- * local prototypes so raylib remains warning-clean with both installed and
- * current project GLdc headers; identical repeated C declarations are valid. */
-GLAPI void APIENTRY glKosDrawMultiStrips(const GLint *firsts, const GLsizei *counts, GLsizei n);
-GLAPI void APIENTRY glKosDrawTrianglesArrays(GLint first, GLsizei count);
-
 #include "dc_mesh.h"
 #include "dc_mesh_color.h"
 #include "raylib.h"
 #include "rlgl.h"
 #include "raymath.h"
-
-/* GLdc stats integration */
-#ifdef GLDC_ENABLE_STATS
-#include "gldc_stats.h"
-#endif
 
 /* -------------------------------------------------------------------
  * Registry — global table mapping IDs to DCMeshData
@@ -664,13 +653,6 @@ static void dcDrawSubmesh(DCSubmesh* sm, Material material, Matrix transform) {
     int use_patchE = dcPatchEEligible(sm, material);
 #else
     int use_patchE = 0;
-#endif
-
-#ifdef GLDC_ENABLE_STATS
-    if (use_patchE) GLDC_STAT_INC(patchE_hits);
-    else GLDC_STAT_INC(patchE_fallbacks);
-    GLDC_STAT_ADD(strip_count, sm->strip_count);
-    GLDC_STAT_ADD(strip_vertices_total, sm->vertex_count);
 #endif
 
     DCBlendRestore blend_restore = dcForceOpaqueBlendOff(use_patchE);
