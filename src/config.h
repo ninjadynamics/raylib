@@ -168,8 +168,9 @@
 //#define SUPPORT_FILEFORMAT_BMP      1
 //#define SUPPORT_FILEFORMAT_TGA      1
 //#define SUPPORT_FILEFORMAT_JPG      1
-#define SUPPORT_FILEFORMAT_GIF      1
-#define SUPPORT_FILEFORMAT_QOI      1
+// HyperSolar's Dreamcast payload contains no GIF or QOI images.
+//#define SUPPORT_FILEFORMAT_GIF      1
+//#define SUPPORT_FILEFORMAT_QOI      1
 //#define SUPPORT_FILEFORMAT_PSD      1
 //#define SUPPORT_FILEFORMAT_DDS      1
 //#define SUPPORT_FILEFORMAT_HDR      1
@@ -219,12 +220,15 @@
 // Module: rmodels - Configuration Flags
 //------------------------------------------------------------------------------------
 // Selected desired model fileformats to be supported for loading
-#define SUPPORT_FILEFORMAT_OBJ          1
-#define SUPPORT_FILEFORMAT_MTL          1
-#define SUPPORT_FILEFORMAT_IQM          1
+// HyperSolar's payload contains GLB models only; procedural meshes are created
+// through SUPPORT_MESH_GENERATION below. Keep every other importer disabled so
+// its format dispatcher cannot retain an otherwise-unused parser in the ELF.
+//#define SUPPORT_FILEFORMAT_OBJ          1
+//#define SUPPORT_FILEFORMAT_MTL          1
+//#define SUPPORT_FILEFORMAT_IQM          1
 #define SUPPORT_FILEFORMAT_GLTF         1
-#define SUPPORT_FILEFORMAT_VOX          1
-#define SUPPORT_FILEFORMAT_M3D          1
+//#define SUPPORT_FILEFORMAT_VOX          1
+//#define SUPPORT_FILEFORMAT_M3D          1
 // Support procedural mesh generation functions, uses external par_shapes.h library
 // NOTE: Some generated meshes DO NOT include generated texture coordinates
 #define SUPPORT_MESH_GENERATION         1
