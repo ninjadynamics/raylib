@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stddef.h>
 #include <limits.h>
 #include <stdint.h>
 #include <GL/gl.h>
@@ -23,6 +24,60 @@
 #include "raylib.h"
 #include "rlgl.h"
 #include "raymath.h"
+
+/* Deferred DCMesh submission is an explicit paired-stack experiment. Keep it
+ * off in standalone raylib-dc builds and require the exact GLdc ABI/capability
+ * when HyperSolar enables it, rather than silently compiling against an older
+ * kos-ports header. */
+#ifndef RLDC_USE_DEFERRED_DCMESH
+#define RLDC_USE_DEFERRED_DCMESH 0
+#endif
+
+#if RLDC_USE_DEFERRED_DCMESH
+#if !defined(GL_KOS_HAS_DEFERRED_P3T2BGRA_MULTISTRIPS) || \
+    !(GL_KOS_HAS_DEFERRED_P3T2BGRA_MULTISTRIPS)
+#error "RLDC_USE_DEFERRED_DCMESH requires GLdc deferred multistrip support"
+#endif
+#if !defined(GL_KOS_HAS_DEFERRED_P3T2BGRA_TRIANGLES) || \
+    !(GL_KOS_HAS_DEFERRED_P3T2BGRA_TRIANGLES)
+#error "RLDC_USE_DEFERRED_DCMESH requires GLdc deferred triangle support"
+#endif
+#if !defined(GL_KOS_FAST_PATH_ABI_VERSION) || GL_KOS_FAST_PATH_ABI_VERSION != 1u
+#error "RLDC_USE_DEFERRED_DCMESH requires GLdc fast-path ABI 1"
+#endif
+#if !defined(GL_KOS_FAST_PATH_DEFERRED_P3T2BGRA_MULTISTRIPS)
+#error "RLDC_USE_DEFERRED_DCMESH requires the multistrip capability bit"
+#endif
+#if !defined(GL_KOS_FAST_PATH_DEFERRED_P3T2BGRA_TRIANGLES)
+#error "RLDC_USE_DEFERRED_DCMESH requires the triangle capability bit"
+#endif
+#if !defined(GL_KOS_FAST_PATH_CAPABILITIES) || \
+    !(GL_KOS_FAST_PATH_CAPABILITIES & \
+      GL_KOS_FAST_PATH_DEFERRED_P3T2BGRA_MULTISTRIPS) || \
+    !(GL_KOS_FAST_PATH_CAPABILITIES & \
+      GL_KOS_FAST_PATH_DEFERRED_P3T2BGRA_TRIANGLES)
+#error "RLDC_USE_DEFERRED_DCMESH requires a deferred-enabled GLdc build"
+#endif
+
+/* Both arrays are borrowed without a vertex copy. Make every cross-library
+ * layout assumption fail at compile time; GLdc copies the range metadata into
+ * its descriptor bank, while the DCMesh vertex payload remains immutable
+ * through the next swap/flush. */
+typedef char DCMeshDeferredVertexSizeMustMatch[
+    sizeof(DCVertex) == sizeof(GLKosVertexP3T2BGRA) ? 1 : -1];
+typedef char DCMeshDeferredVertexPositionMustMatch[
+    offsetof(DCVertex, x) == offsetof(GLKosVertexP3T2BGRA, x) ? 1 : -1];
+typedef char DCMeshDeferredVertexUvMustMatch[
+    offsetof(DCVertex, u) == offsetof(GLKosVertexP3T2BGRA, u) ? 1 : -1];
+typedef char DCMeshDeferredVertexColorMustMatch[
+    offsetof(DCVertex, color) == offsetof(GLKosVertexP3T2BGRA, bgra) ? 1 : -1];
+typedef char DCMeshDeferredStripSizeMustMatch[
+    sizeof(DCStrip) == sizeof(GLKosStripRange) ? 1 : -1];
+typedef char DCMeshDeferredStripFirstMustMatch[
+    offsetof(DCStrip, first_vertex) == offsetof(GLKosStripRange, first) ? 1 : -1];
+typedef char DCMeshDeferredStripCountMustMatch[
+    offsetof(DCStrip, vertex_count) == offsetof(GLKosStripRange, count) ? 1 : -1];
+#endif
 
 /* -------------------------------------------------------------------
  * Registry — global table mapping IDs to DCMeshData
@@ -613,10 +668,22 @@ void dcMeshBatchDraw(Matrix transform, Color tint) {
 
     rlPushMatrix();
     rlMultMatrixf(MatrixToFloat(transform));
-    /* Fused-lane submission (2026-07-15): the GL_TRIANGLES call rode GLdc's
-     * generic generator (the interleaved/BGRA layout misses the PUC dispatch).
-     * Same records, PUC-grade writer. */
-    glKosDrawTrianglesArrays(0, (GLsizei)cache->vertex_count);
+    /* Identity-tint instances borrow the persistent expanded triangle cache
+     * through swap. Flash/hit tints use one shared scratch-color array that is
+     * overwritten by the next instance, so they must remain synchronous. */
+    GLboolean deferred = GL_FALSE;
+#if RLDC_USE_DEFERRED_DCMESH
+    if (!needs_tint && cache->vertex_count <= (uint32_t)INT_MAX) {
+        deferred = glKosTryDeferTrianglesP3T2BGRASwapStable(
+            (const GLKosVertexP3T2BGRA *)cache->vertices,
+            (GLsizei)cache->vertex_count);
+    }
+#endif
+    if (!deferred) {
+        /* Fused-lane submission (2026-07-15): this exact synchronous fallback
+         * bypasses GLdc's generic interleaved/BGRA generator. */
+        glKosDrawTrianglesArrays(0, (GLsizei)cache->vertex_count);
+    }
     rlPopMatrix();
 }
 
@@ -685,11 +752,33 @@ static void dcDrawSubmesh(DCSubmesh* sm, Material material, Matrix transform) {
                material.maps[MATERIAL_MAP_DIFFUSE].color.b,
                material.maps[MATERIAL_MAP_DIFFUSE].color.a);
 
-    /* Submit all strips in ONE GLdc call (glKosDrawMultiStrips): the old
-     * per-strip glDrawArrays loop paid list bookkeeping + a full XMTRX MVP
-     * concat per strip (F22: 192 strips/frame) and routed through GLdc's
-     * generic generator. Chunked to bound the stack arrays. */
-    {
+    /* The sidecar owns both arrays until model unload. When the paired N2 lane
+     * is enabled, offer the complete submesh in one descriptor: GLdc copies
+     * the persistent strip-range metadata immediately and borrows only the
+     * immutable vertex payload through swap. Repeated-instance triangle
+     * caches use their separate API above; only identity-tint instances are
+     * eligible because the shared tint buffer is rewritten between enemies.
+     *
+     * A rejection is all-or-nothing and leaves list/header/capture state
+     * untouched, so the established chunked synchronous path below remains
+     * the exact fallback (including non-OP, fog and near-plane cases). */
+    GLboolean deferred = GL_FALSE;
+#if RLDC_USE_DEFERRED_DCMESH
+    if (sm->vertex_count <= (uint32_t)INT_MAX &&
+        sm->strip_count <= (uint32_t)INT_MAX) {
+        deferred = glKosTryDeferMultiStripsP3T2BGRASwapStable(
+            (const GLKosVertexP3T2BGRA *)sm->vertices,
+            (GLsizei)sm->vertex_count,
+            (const GLKosStripRange *)sm->strips,
+            (GLsizei)sm->strip_count);
+    }
+#endif
+
+    if (!deferred) {
+        /* Submit all strips in one GLdc setup. The old per-strip glDrawArrays
+         * loop paid list bookkeeping + a full XMTRX MVP concat per strip
+         * (F22: 192 strips/frame) and routed through GLdc's generic generator.
+         * Chunking bounds the temporary synchronous range arrays. */
         enum { DC_STRIP_CHUNK = 128 };
         GLint   firsts[DC_STRIP_CHUNK];
         GLsizei counts[DC_STRIP_CHUNK];
