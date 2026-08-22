@@ -25,38 +25,33 @@
 #include "rlgl.h"
 #include "raymath.h"
 
-/* Deferred DCMesh submission is an explicit paired-stack experiment. Keep it
- * off in standalone raylib-dc builds and require the exact GLdc ABI/capability
- * when HyperSolar enables it, rather than silently compiling against an older
- * kos-ports header. */
-#ifndef RLDC_USE_DEFERRED_DCMESH
-#define RLDC_USE_DEFERRED_DCMESH 0
-#endif
-
-#if RLDC_USE_DEFERRED_DCMESH
+/* Persistent DCMesh submission permanently uses the paired GLdc N2 seam.
+ * Require the exact ABI and capabilities instead of silently compiling a
+ * synchronous-only raylib-dc against an older kos-ports header. Runtime
+ * eligibility failures still take the exact synchronous paths below. */
 #if !defined(GL_KOS_HAS_DEFERRED_P3T2BGRA_MULTISTRIPS) || \
     !(GL_KOS_HAS_DEFERRED_P3T2BGRA_MULTISTRIPS)
-#error "RLDC_USE_DEFERRED_DCMESH requires GLdc deferred multistrip support"
+#error "raylib-dc requires GLdc deferred multistrip support"
 #endif
 #if !defined(GL_KOS_HAS_DEFERRED_P3T2BGRA_TRIANGLES) || \
     !(GL_KOS_HAS_DEFERRED_P3T2BGRA_TRIANGLES)
-#error "RLDC_USE_DEFERRED_DCMESH requires GLdc deferred triangle support"
+#error "raylib-dc requires GLdc deferred triangle support"
 #endif
 #if !defined(GL_KOS_FAST_PATH_ABI_VERSION) || GL_KOS_FAST_PATH_ABI_VERSION != 1u
-#error "RLDC_USE_DEFERRED_DCMESH requires GLdc fast-path ABI 1"
+#error "raylib-dc requires GLdc fast-path ABI 1"
 #endif
 #if !defined(GL_KOS_FAST_PATH_DEFERRED_P3T2BGRA_MULTISTRIPS)
-#error "RLDC_USE_DEFERRED_DCMESH requires the multistrip capability bit"
+#error "raylib-dc requires the GLdc multistrip capability bit"
 #endif
 #if !defined(GL_KOS_FAST_PATH_DEFERRED_P3T2BGRA_TRIANGLES)
-#error "RLDC_USE_DEFERRED_DCMESH requires the triangle capability bit"
+#error "raylib-dc requires the GLdc triangle capability bit"
 #endif
 #if !defined(GL_KOS_FAST_PATH_CAPABILITIES) || \
     !(GL_KOS_FAST_PATH_CAPABILITIES & \
       GL_KOS_FAST_PATH_DEFERRED_P3T2BGRA_MULTISTRIPS) || \
     !(GL_KOS_FAST_PATH_CAPABILITIES & \
       GL_KOS_FAST_PATH_DEFERRED_P3T2BGRA_TRIANGLES)
-#error "RLDC_USE_DEFERRED_DCMESH requires a deferred-enabled GLdc build"
+#error "raylib-dc requires a deferred-capable GLdc build"
 #endif
 
 /* Both arrays are borrowed without a vertex copy. Make every cross-library
@@ -77,7 +72,6 @@ typedef char DCMeshDeferredStripFirstMustMatch[
     offsetof(DCStrip, first_vertex) == offsetof(GLKosStripRange, first) ? 1 : -1];
 typedef char DCMeshDeferredStripCountMustMatch[
     offsetof(DCStrip, vertex_count) == offsetof(GLKosStripRange, count) ? 1 : -1];
-#endif
 
 /* -------------------------------------------------------------------
  * Registry — global table mapping IDs to DCMeshData
@@ -672,13 +666,11 @@ void dcMeshBatchDraw(Matrix transform, Color tint) {
      * through swap. Flash/hit tints use one shared scratch-color array that is
      * overwritten by the next instance, so they must remain synchronous. */
     GLboolean deferred = GL_FALSE;
-#if RLDC_USE_DEFERRED_DCMESH
     if (!needs_tint && cache->vertex_count <= (uint32_t)INT_MAX) {
         deferred = glKosTryDeferTrianglesP3T2BGRASwapStable(
             (const GLKosVertexP3T2BGRA *)cache->vertices,
             (GLsizei)cache->vertex_count);
     }
-#endif
     if (!deferred) {
         /* Fused-lane submission (2026-07-15): this exact synchronous fallback
          * bypasses GLdc's generic interleaved/BGRA generator. */
@@ -752,8 +744,8 @@ static void dcDrawSubmesh(DCSubmesh* sm, Material material, Matrix transform) {
                material.maps[MATERIAL_MAP_DIFFUSE].color.b,
                material.maps[MATERIAL_MAP_DIFFUSE].color.a);
 
-    /* The sidecar owns both arrays until model unload. When the paired N2 lane
-     * is enabled, offer the complete submesh in one descriptor: GLdc copies
+    /* The sidecar owns both arrays until model unload. Offer the complete
+     * submesh to the permanent N2 lane in one descriptor: GLdc copies
      * the persistent strip-range metadata immediately and borrows only the
      * immutable vertex payload through swap. Repeated-instance triangle
      * caches use their separate API above; only identity-tint instances are
@@ -763,7 +755,6 @@ static void dcDrawSubmesh(DCSubmesh* sm, Material material, Matrix transform) {
      * untouched, so the established chunked synchronous path below remains
      * the exact fallback (including non-OP, fog and near-plane cases). */
     GLboolean deferred = GL_FALSE;
-#if RLDC_USE_DEFERRED_DCMESH
     if (sm->vertex_count <= (uint32_t)INT_MAX &&
         sm->strip_count <= (uint32_t)INT_MAX) {
         deferred = glKosTryDeferMultiStripsP3T2BGRASwapStable(
@@ -772,7 +763,6 @@ static void dcDrawSubmesh(DCSubmesh* sm, Material material, Matrix transform) {
             (const GLKosStripRange *)sm->strips,
             (GLsizei)sm->strip_count);
     }
-#endif
 
     if (!deferred) {
         /* Submit all strips in one GLdc setup. The old per-strip glDrawArrays
