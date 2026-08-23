@@ -433,7 +433,7 @@ typedef struct rlRenderBatch {
 #if defined(PLATFORM_DREAMCAST) || defined(DREAMCAST)
 // Snapshot exported by the Dreamcast immediate-mode batcher when
 // RLDC_ENABLE_STATS is compiled in. The query returns false otherwise.
-#define RLDC_BATCH_STATS_VERSION 1
+#define RLDC_BATCH_STATS_VERSION 2
 typedef struct rlDcBatchStats {
     unsigned int structSize;
     unsigned int abiVersion;
@@ -448,6 +448,8 @@ typedef struct rlDcBatchStats {
     unsigned int cancelledUnbinds;
     unsigned int interleavedHits;
     unsigned int interleavedFallbacks;
+    unsigned int finalPacketHits;
+    unsigned int finalPacketFallbacks;
 } rlDcBatchStats;
 #endif
 
@@ -757,6 +759,13 @@ RLAPI bool rlCheckRenderBatchLimit(int vCount);         // Check internal buffer
 #if defined(PLATFORM_DREAMCAST) || defined(DREAMCAST)
 RLAPI bool rlGetDcBatchStats(rlDcBatchStats *stats, unsigned int statsSize); // Size-checked Dreamcast stats snapshot
 RLAPI void rlResetDcBatchStats(void);                    // Reset Dreamcast batch stats; no-op when disabled
+RLAPI void rlDcExternalStateBarrier(void);               // Flush + invalidate before expert external rendering
+#if defined(GLDC_NATIVE_BENCH) && GLDC_NATIVE_BENCH
+#define RL_DC_NATIVE_BENCH_N3_CHECKED 0
+#define RL_DC_NATIVE_BENCH_F1_ONLY 1
+#define RL_DC_NATIVE_BENCH_N3_TRUSTED 2
+RLAPI void rlDcNativeBenchSelectN3Route(int route);       // Same-build checked/F1/trusted timing control
+#endif
 #endif
 
 RLAPI void rlSetTexture(unsigned int id);               // Set current texture for render batch and check buffers limits
@@ -1925,7 +1934,7 @@ void rlTextureParameters(unsigned int id, int param, int value)
         (param == RL_TEXTURE_FILTER_ANISOTROPIC) ||
         (param == RL_TEXTURE_MIPMAP_BIAS_RATIO)) return;
 
-    rlDcExternalStateBarrier();
+    rlDcExternalStateBarrierInternal();
 #endif
     glBindTexture(GL_TEXTURE_2D, id);
 
@@ -3539,6 +3548,8 @@ bool rlGetDcBatchStats(rlDcBatchStats *stats, unsigned int statsSize)
     stats->cancelledUnbinds = rlDcBatch.statCancelledUnbinds;
     stats->interleavedHits = rlDcBatch.statInterleavedHits;
     stats->interleavedFallbacks = rlDcBatch.statInterleavedFallbacks;
+    stats->finalPacketHits = rlDcBatch.statFinalPacketHits;
+    stats->finalPacketFallbacks = rlDcBatch.statFinalPacketFallbacks;
     return true;
 #else
     (void)stats;
@@ -3551,6 +3562,18 @@ void rlResetDcBatchStats(void)
 {
     rlDcResetStats();
 }
+
+void rlDcExternalStateBarrier(void)
+{
+    rlDcExternalStateBarrierInternal();
+}
+
+#if defined(GLDC_NATIVE_BENCH) && GLDC_NATIVE_BENCH
+void rlDcNativeBenchSelectN3Route(int route)
+{
+    rlDcNativeBenchSelectN3RouteInternal(route);
+}
+#endif
 #endif
 
 // Check internal buffer overflow for a given number of vertex
@@ -3588,7 +3611,7 @@ unsigned int rlLoadTexture(const void *data, int width, int height, int format, 
     unsigned int id = 0;
 
 #if defined(PLATFORM_DREAMCAST)
-    rlDcExternalStateBarrier();
+    rlDcExternalStateBarrierInternal();
 #endif
     glBindTexture(GL_TEXTURE_2D, 0);    // Free any old binding
 
@@ -3902,7 +3925,7 @@ unsigned int rlLoadTextureCubemap(const void *data, int size, int format, int mi
 void rlUpdateTexture(unsigned int id, int offsetX, int offsetY, int width, int height, int format, const void *data)
 {
 #if defined(PLATFORM_DREAMCAST)
-    rlDcExternalStateBarrier();
+    rlDcExternalStateBarrierInternal();
 #endif
     glBindTexture(GL_TEXTURE_2D, id);
 
@@ -3996,7 +4019,7 @@ void rlGetGlTextureFormats(int format, unsigned int *glInternalFormat, unsigned 
 void rlUnloadTexture(unsigned int id)
 {
 #if defined(PLATFORM_DREAMCAST)
-    rlDcExternalStateBarrier();
+    rlDcExternalStateBarrierInternal();
     if (rlDcBatch.textureId == id) rlDcBatch.textureId = 0;
 #endif
     glDeleteTextures(1, &id);
@@ -4007,7 +4030,7 @@ void rlUnloadTexture(unsigned int id)
 void rlGenTextureMipmaps(unsigned int id, int width, int height, int format, int *mipmaps)
 {
 #if defined(PLATFORM_DREAMCAST)
-    rlDcExternalStateBarrier();
+    rlDcExternalStateBarrierInternal();
 #endif
 #if defined(GRAPHICS_API_OPENGL_33) || defined(GRAPHICS_API_OPENGL_ES2)
     glBindTexture(GL_TEXTURE_2D, id);

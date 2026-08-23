@@ -37,8 +37,8 @@
     !(GL_KOS_HAS_DEFERRED_P3T2BGRA_TRIANGLES)
 #error "raylib-dc requires GLdc deferred triangle support"
 #endif
-#if !defined(GL_KOS_FAST_PATH_ABI_VERSION) || GL_KOS_FAST_PATH_ABI_VERSION != 1u
-#error "raylib-dc requires GLdc fast-path ABI 1"
+#if !defined(GL_KOS_FAST_PATH_ABI_VERSION) || GL_KOS_FAST_PATH_ABI_VERSION != 3u
+#error "raylib-dc requires GLdc fast-path ABI 3"
 #endif
 #if !defined(GL_KOS_FAST_PATH_DEFERRED_P3T2BGRA_MULTISTRIPS)
 #error "raylib-dc requires the GLdc multistrip capability bit"

@@ -12,12 +12,38 @@
 
 #include "../../src/rlgl_dc_batch.h"
 
-#ifndef AUDIT_EXPECT_FAST
-#error "Each audit target must state whether the paired fast lane is expected"
+#ifndef AUDIT_EXPECT_F1
+#error "Each audit target must state whether the paired F1 lane is expected"
 #endif
-#if RLDC_HAS_INTERLEAVED_P3T2BGRA != AUDIT_EXPECT_FAST
-#error "RLDC fast-lane feature/ABI gate disagrees with this test configuration"
+#ifndef AUDIT_EXPECT_N3
+#error "Each audit target must state whether the paired N3 lane is expected"
 #endif
+#if RLDC_HAS_INTERLEAVED_P3T2BGRA != AUDIT_EXPECT_F1
+#error "RLDC F1 feature/ABI gate disagrees with this test configuration"
+#endif
+#if RLDC_HAS_FINAL_INTERLEAVED_P3T2BGRA != AUDIT_EXPECT_N3
+#error "RLDC N3 feature/ABI gate disagrees with this test configuration"
+#endif
+
+#if (defined(GLDC_NATIVE_BENCH) && GLDC_NATIVE_BENCH) || \
+    !RLDC_HYPERSOLAR_TRUSTED_N3
+#define AUDIT_DEFAULT_N3_CHECKED 1
+#else
+#define AUDIT_DEFAULT_N3_CHECKED 0
+#endif
+
+enum {
+    AUDIT_ROUTE_N3 = 1,
+    AUDIT_ROUTE_F1,
+    AUDIT_ROUTE_CLIENT,
+    AUDIT_ROUTE_N3_TRUSTED
+};
+
+enum {
+    AUDIT_SELECTOR_N3_CHECKED = 0,
+    AUDIT_SELECTOR_F1_ONLY = 1,
+    AUDIT_SELECTOR_N3_TRUSTED = 2
+};
 
 static int drawCount;
 static int drawSizes[8];
@@ -32,23 +58,62 @@ static int normalArrayEnabled;
 static int normalPointerCount;
 static int clientStateCalls;
 static int pointerCalls;
-static int fastTryCount;
-static int fastAccept;
-static GLenum fastMode;
+static int routeCount;
+static int routes[8];
+static int f1TryCount;
+static int f1Accept;
+static GLenum f1Mode;
+static int n3TryCount;
+static int n3Accept;
+static GLenum n3Mode;
+static int trustedN3TryCount;
+static int trustedN3Accept;
+static GLenum trustedN3Mode;
+
+static void recordRoute(int route)
+{
+    assert(routeCount < (int)(sizeof(routes)/sizeof(routes[0])));
+    routes[routeCount++] = route;
+}
 
 #if !defined(AUDIT_GLKOS_LEGACY)
 unsigned int glKosGetFastPathCapabilities(void)
 {
-    return GL_KOS_FAST_PATH_INTERLEAVED_P3T2BGRA;
+    return GL_KOS_FAST_PATH_CAPABILITIES;
 }
 
 GLboolean glKosTryDrawInterleavedP3T2BGRA(
     GLenum mode, const GLKosVertexP3T2BGRA *vertices, GLsizei count)
 {
     (void)vertices;
-    fastTryCount++;
-    fastMode = mode;
-    if (!fastAccept) return 0;
+    recordRoute(AUDIT_ROUTE_F1);
+    f1TryCount++;
+    f1Mode = mode;
+    if (!f1Accept) return 0;
+    drawSizes[drawCount++] = count;
+    return 1;
+}
+
+GLboolean glKosTryQueueFinalInterleavedP3T2BGRA(
+    GLenum mode, const GLKosVertexP3T2BGRA *vertices, GLsizei count)
+{
+    (void)vertices;
+    recordRoute(AUDIT_ROUTE_N3);
+    n3TryCount++;
+    n3Mode = mode;
+    if (!n3Accept) return 0;
+    drawSizes[drawCount++] = count;
+    return 1;
+}
+
+GLboolean glKosTryQueueTrustedFinalInterleavedP3T2BGRA(
+    GLenum mode, const GLKosVertexP3T2BGRA *vertices, GLsizei count)
+{
+    (void)vertices;
+    recordRoute(AUDIT_ROUTE_N3_TRUSTED);
+    trustedN3TryCount++;
+    trustedN3Mode = mode;
+    if (!trustedN3Accept) return 0;
     drawSizes[drawCount++] = count;
     return 1;
 }
@@ -57,6 +122,7 @@ GLboolean glKosTryDrawInterleavedP3T2BGRA(
 void glKosDrawTrianglesArrays(int first, GLsizei count)
 {
     (void)first;
+    recordRoute(AUDIT_ROUTE_CLIENT);
     triangleLaneCount++;
     drawSizes[drawCount++] = count;
 }
@@ -117,6 +183,7 @@ void glDrawArrays(GLenum mode, int first, GLsizei count)
 {
     (void)mode;
     (void)first;
+    recordRoute(AUDIT_ROUTE_CLIENT);
     arrayDrawCount++;
     drawSizes[drawCount++] = count;
 }
@@ -136,9 +203,16 @@ static void resetHarness(void)
     normalPointerCount = 0;
     clientStateCalls = 0;
     pointerCalls = 0;
-    fastTryCount = 0;
-    fastAccept = 1;
-    fastMode = 0;
+    routeCount = 0;
+    f1TryCount = 0;
+    f1Accept = 1;
+    f1Mode = 0;
+    n3TryCount = 0;
+    n3Accept = 1;
+    n3Mode = 0;
+    trustedN3TryCount = 0;
+    trustedN3Accept = 1;
+    trustedN3Mode = 0;
 }
 
 static void assertFlushAccounting(void)
@@ -152,6 +226,23 @@ static void assertFlushAccounting(void)
 #endif
 }
 
+static void assertRouteStats(
+    unsigned int n3Hits, unsigned int n3Fallbacks,
+    unsigned int f1Hits, unsigned int f1Fallbacks)
+{
+#ifdef RLDC_ENABLE_STATS
+    assert(rlDcBatch.statFinalPacketHits == n3Hits);
+    assert(rlDcBatch.statFinalPacketFallbacks == n3Fallbacks);
+    assert(rlDcBatch.statInterleavedHits == f1Hits);
+    assert(rlDcBatch.statInterleavedFallbacks == f1Fallbacks);
+#else
+    (void)n3Hits;
+    (void)n3Fallbacks;
+    (void)f1Hits;
+    (void)f1Fallbacks;
+#endif
+}
+
 static void triangle(void)
 {
     assert(rlDcBegin(RL_TRIANGLES));
@@ -161,7 +252,6 @@ static void triangle(void)
     rlDcEnd();
 }
 
-#if RLDC_HAS_INTERLEAVED_P3T2BGRA
 static void quad(void)
 {
     assert(rlDcBegin(RL_QUADS));
@@ -171,7 +261,6 @@ static void quad(void)
     rlDcAppendVertex(0.0f, 1.0f, 0.0f);
     rlDcEnd();
 }
-#endif
 
 static void capturedVertex(float x, float y, float z)
 {
@@ -185,42 +274,253 @@ int main(void)
     resetHarness();
     assert(sizeof(RlDcBatchVertex) == 24);
     assert(sizeof(RlDcBatch) < sizeof(rlDcBatch.verts) + 512);
+#if !defined(AUDIT_GLKOS_LEGACY)
+    {
+        unsigned int expectedCapabilities = 0;
+#if GL_KOS_HAS_INTERLEAVED_P3T2BGRA
+        expectedCapabilities |= GL_KOS_FAST_PATH_INTERLEAVED_P3T2BGRA;
+#endif
+#if GL_KOS_HAS_FINAL_INTERLEAVED_P3T2BGRA
+        expectedCapabilities |= GL_KOS_FAST_PATH_FINAL_INTERLEAVED_P3T2BGRA;
+#endif
+#if GL_KOS_HAS_TRUSTED_FINAL_INTERLEAVED_P3T2BGRA
+        expectedCapabilities |=
+            GL_KOS_FAST_PATH_TRUSTED_FINAL_INTERLEAVED_P3T2BGRA;
+#endif
+        assert(glKosGetFastPathCapabilities() == expectedCapabilities);
+    }
+#endif
+
+#ifdef AUDIT_TEST_MIN_THRESHOLD
+    /* A below-cutoff batch must skip N3 entirely (it is not an N3 fallback),
+     * while the first eligible batch still takes the normal checked route. */
     triangle();
     rlDcFlushAll();
     assert(drawCount == 1 && drawSizes[0] == 3);
-    assert(!normalArrayEnabled && normalPointerCount == 0);
-#if RLDC_HAS_INTERLEAVED_P3T2BGRA
-    assert(fastTryCount == 1);
-    assert(fastMode == GL_TRIANGLES);
-    assert(clientStateCalls == 0 && pointerCalls == 0);
-    assert(arrayDrawCount == 0 && triangleLaneCount == 0);
+    assert(n3TryCount == 0 && trustedN3TryCount == 0);
+    assert(f1TryCount == 1 && f1Mode == GL_TRIANGLES);
+    assert(routeCount == 1 && routes[0] == AUDIT_ROUTE_F1);
+    assertRouteStats(0, 0, 1, 0);
     assertFlushAccounting();
 
     resetHarness();
     quad();
     rlDcFlushAll();
-    assert(fastTryCount == 1);
-    assert(fastMode == GL_QUADS);
     assert(drawCount == 1 && drawSizes[0] == 4);
-    assert(clientStateCalls == 0 && pointerCalls == 0);
-    assert(arrayDrawCount == 0 && triangleLaneCount == 0);
+    assert(n3TryCount == 1 && n3Mode == GL_QUADS);
+    assert(trustedN3TryCount == 0 && f1TryCount == 0);
+    assert(routeCount == 1 && routes[0] == AUDIT_ROUTE_N3);
+    assertRouteStats(1, 0, 0, 0);
     assertFlushAccounting();
+    return 0;
+#endif
 
-    /* A declined borrowed-input try must execute the complete legacy array
-     * setup and submit exactly once. */
-    resetHarness();
-    fastAccept = 0;
     triangle();
     rlDcFlushAll();
-    assert(fastTryCount == 1);
+    assert(drawCount == 1 && drawSizes[0] == 3);
+    assert(!normalArrayEnabled && normalPointerCount == 0);
+#if RLDC_HAS_FINAL_INTERLEAVED_P3T2BGRA
+#if AUDIT_DEFAULT_N3_CHECKED
+    assert(n3TryCount == 1 && n3Mode == GL_TRIANGLES);
+    assert(trustedN3TryCount == 0);
+    assert(f1TryCount == 0);
+    assert(routeCount == 1 && routes[0] == AUDIT_ROUTE_N3);
+#else
+    assert(trustedN3TryCount == 1 && trustedN3Mode == GL_TRIANGLES);
+    assert(n3TryCount == 0 && f1TryCount == 0);
+    assert(routeCount == 1 && routes[0] == AUDIT_ROUTE_N3_TRUSTED);
+#endif
+    assert(clientStateCalls == 0 && pointerCalls == 0);
+    assert(arrayDrawCount == 0 && triangleLaneCount == 0);
+    assertRouteStats(1, 0, 0, 0);
+#elif RLDC_HAS_INTERLEAVED_P3T2BGRA
+    assert(n3TryCount == 0 && trustedN3TryCount == 0);
+    assert(f1TryCount == 1 && f1Mode == GL_TRIANGLES);
+    assert(routeCount == 1 && routes[0] == AUDIT_ROUTE_F1);
+    assert(clientStateCalls == 0 && pointerCalls == 0);
+    assert(arrayDrawCount == 0 && triangleLaneCount == 0);
+    assertRouteStats(0, 0, 1, 0);
+#else
+    assert(n3TryCount == 0 && trustedN3TryCount == 0 && f1TryCount == 0);
+    assert(routeCount == 1 && routes[0] == AUDIT_ROUTE_CLIENT);
+    assert(clientStateCalls == 7 && pointerCalls == 3);
+    assert(arrayDrawCount == 0 && triangleLaneCount == 1);
+    assertRouteStats(0, 0, 0, 0);
+#endif
+    assertFlushAccounting();
+
+#if defined(GLDC_NATIVE_BENCH) && GLDC_NATIVE_BENCH && \
+    RLDC_HAS_FINAL_INTERLEAVED_P3T2BGRA
+    /* Switching with queued geometry must flush it through the old checked
+     * route. Only later geometry may use the trusted seam. */
+    resetHarness();
+    triangle();
+    rlDcNativeBenchSelectN3RouteInternal(AUDIT_SELECTOR_N3_TRUSTED);
+    assert(n3TryCount == 1 && trustedN3TryCount == 0);
+    assert(routeCount == 1 && routes[0] == AUDIT_ROUTE_N3);
+    triangle();
+    rlDcFlushAll();
+    assert(trustedN3TryCount == 1 && trustedN3Mode == GL_TRIANGLES);
+    assert(n3TryCount == 1 && f1TryCount == 0);
+    assert(routeCount == 2 && routes[1] == AUDIT_ROUTE_N3_TRUSTED);
+    assert(drawCount == 2 && drawSizes[0] == 3 && drawSizes[1] == 3);
+    assertRouteStats(2, 0, 0, 0);
+    assertFlushAccounting();
+
+    /* A trusted decline must retain the exact trusted -> F1 fallback order;
+     * the ordinary checked constructor remains bypassed. */
+    resetHarness();
+    rlDcNativeBenchSelectN3RouteInternal(AUDIT_SELECTOR_N3_TRUSTED);
+    trustedN3Accept = 0;
+    triangle();
+    rlDcFlushAll();
+    assert(trustedN3TryCount == 1 && n3TryCount == 0 && f1TryCount == 1);
+    assert(routeCount == 2 && routes[0] == AUDIT_ROUTE_N3_TRUSTED &&
+           routes[1] == AUDIT_ROUTE_F1);
+    assert(drawCount == 1 && drawSizes[0] == 3);
+    assertRouteStats(0, 1, 1, 0);
+    assertFlushAccounting();
+
+    /* The F1 control must bypass both N3 symbols in the same archive. */
+    resetHarness();
+    rlDcNativeBenchSelectN3RouteInternal(AUDIT_SELECTOR_F1_ONLY);
+    triangle();
+    rlDcFlushAll();
+    assert(trustedN3TryCount == 0 && n3TryCount == 0 && f1TryCount == 1);
+    assert(routeCount == 1 && routes[0] == AUDIT_ROUTE_F1);
+    assert(drawCount == 1 && drawSizes[0] == 3);
+    assertRouteStats(0, 0, 1, 0);
+    assertFlushAccounting();
+#endif
+
+    resetHarness();
+    quad();
+    rlDcFlushAll();
+    assert(drawCount == 1 && drawSizes[0] == 4);
+#if RLDC_HAS_FINAL_INTERLEAVED_P3T2BGRA
+#if AUDIT_DEFAULT_N3_CHECKED
+    assert(n3TryCount == 1 && n3Mode == GL_QUADS);
+    assert(trustedN3TryCount == 0);
+    assert(f1TryCount == 0);
+    assert(routeCount == 1 && routes[0] == AUDIT_ROUTE_N3);
+#else
+    assert(trustedN3TryCount == 1 && trustedN3Mode == GL_QUADS);
+    assert(n3TryCount == 0 && f1TryCount == 0);
+    assert(routeCount == 1 && routes[0] == AUDIT_ROUTE_N3_TRUSTED);
+#endif
+    assert(clientStateCalls == 0 && pointerCalls == 0);
+    assert(arrayDrawCount == 0 && triangleLaneCount == 0);
+    assertRouteStats(1, 0, 0, 0);
+#elif RLDC_HAS_INTERLEAVED_P3T2BGRA
+    assert(n3TryCount == 0 && trustedN3TryCount == 0);
+    assert(f1TryCount == 1 && f1Mode == GL_QUADS);
+    assert(routeCount == 1 && routes[0] == AUDIT_ROUTE_F1);
+    assert(clientStateCalls == 0 && pointerCalls == 0);
+    assert(arrayDrawCount == 0 && triangleLaneCount == 0);
+    assertRouteStats(0, 0, 1, 0);
+#else
+    assert(n3TryCount == 0 && trustedN3TryCount == 0 && f1TryCount == 0);
+    assert(routeCount == 1 && routes[0] == AUDIT_ROUTE_CLIENT);
+    assert(clientStateCalls == 7 && pointerCalls == 3);
+    assert(arrayDrawCount == 1 && triangleLaneCount == 0);
+    assertRouteStats(0, 0, 0, 0);
+#endif
+    assertFlushAccounting();
+
+#if RLDC_HAS_FINAL_INTERLEAVED_P3T2BGRA
+    /* The native benchmark and standalone raylib default to checked N3;
+     * HyperSolar's explicit finite-producer contract selects trusted N3. A
+     * decline reaches F1 when compiled, otherwise exact client arrays. */
+    resetHarness();
+#if AUDIT_DEFAULT_N3_CHECKED
+    n3Accept = 0;
+#else
+    trustedN3Accept = 0;
+#endif
+    triangle();
+    rlDcFlushAll();
+#if AUDIT_DEFAULT_N3_CHECKED
+    assert(n3TryCount == 1 && n3Mode == GL_TRIANGLES);
+    assert(trustedN3TryCount == 0);
+#else
+    assert(trustedN3TryCount == 1 && trustedN3Mode == GL_TRIANGLES);
+    assert(n3TryCount == 0);
+#endif
+    assert(drawCount == 1 && drawSizes[0] == 3);
+#if RLDC_HAS_INTERLEAVED_P3T2BGRA
+    assert(f1TryCount == 1 && f1Mode == GL_TRIANGLES);
+    assert(routeCount == 2 &&
+#if AUDIT_DEFAULT_N3_CHECKED
+           routes[0] == AUDIT_ROUTE_N3 &&
+#else
+           routes[0] == AUDIT_ROUTE_N3_TRUSTED &&
+#endif
+           routes[1] == AUDIT_ROUTE_F1);
+    assert(clientStateCalls == 0 && pointerCalls == 0);
+    assert(arrayDrawCount == 0 && triangleLaneCount == 0);
+    assertRouteStats(0, 1, 1, 0);
+#else
+    assert(f1TryCount == 0);
+    assert(routeCount == 2 &&
+#if AUDIT_DEFAULT_N3_CHECKED
+           routes[0] == AUDIT_ROUTE_N3 &&
+#else
+           routes[0] == AUDIT_ROUTE_N3_TRUSTED &&
+#endif
+           routes[1] == AUDIT_ROUTE_CLIENT);
+    assert(clientStateCalls == 7 && pointerCalls == 3);
+    assert(arrayDrawCount == 0 && triangleLaneCount == 1);
+    assertRouteStats(0, 1, 0, 0);
+#endif
+    assertFlushAccounting();
+
+#if RLDC_HAS_INTERLEAVED_P3T2BGRA
+    /* When both typed routes decline, client arrays are installed only after
+     * the observable trusted/checked-N3 -> F1 attempt order. */
+    resetHarness();
+#if AUDIT_DEFAULT_N3_CHECKED
+    n3Accept = 0;
+#else
+    trustedN3Accept = 0;
+#endif
+    f1Accept = 0;
+    triangle();
+    rlDcFlushAll();
+    assert(f1TryCount == 1);
+#if AUDIT_DEFAULT_N3_CHECKED
+    assert(n3TryCount == 1 && trustedN3TryCount == 0);
+#else
+    assert(trustedN3TryCount == 1 && n3TryCount == 0);
+#endif
+    assert(routeCount == 3 &&
+#if AUDIT_DEFAULT_N3_CHECKED
+           routes[0] == AUDIT_ROUTE_N3 &&
+#else
+           routes[0] == AUDIT_ROUTE_N3_TRUSTED &&
+#endif
+           routes[1] == AUDIT_ROUTE_F1 &&
+           routes[2] == AUDIT_ROUTE_CLIENT);
     assert(drawCount == 1 && drawSizes[0] == 3);
     assert(clientStateCalls == 7 && pointerCalls == 3);
     assert(arrayDrawCount == 1 && triangleLaneCount == 0);
+    assertRouteStats(0, 1, 0, 1);
     assertFlushAccounting();
-#else
-    assert(fastTryCount == 0);
+#endif
+
+#elif RLDC_HAS_INTERLEAVED_P3T2BGRA
+    /* With no N3 feature, a declined F1 try falls straight through to the
+     * exact client-array path. */
+    resetHarness();
+    f1Accept = 0;
+    triangle();
+    rlDcFlushAll();
+    assert(n3TryCount == 0 && trustedN3TryCount == 0 && f1TryCount == 1);
+    assert(routeCount == 2 && routes[0] == AUDIT_ROUTE_F1 &&
+           routes[1] == AUDIT_ROUTE_CLIENT);
+    assert(drawCount == 1 && drawSizes[0] == 3);
     assert(clientStateCalls == 7 && pointerCalls == 3);
-    assert(arrayDrawCount == 0 && triangleLaneCount == 1);
+    assert(arrayDrawCount == 1 && triangleLaneCount == 0);
+    assertRouteStats(0, 0, 0, 1);
     assertFlushAccounting();
 #endif
 
@@ -329,7 +629,8 @@ int main(void)
     rlDcSetTexture(9);
     triangle();
     rlDcSetTexture(0);
-    rlDcExternalStateBarrier();
+    /* This header-level fixture does not compile rlgl.h's public wrapper. */
+    rlDcExternalStateBarrierInternal();
     assert(drawCount == 1 && !textureEnabled && boundTexture == 0);
     assert(!rlDcBatch.pendingUnbind && !rlDcBatch.lastFlushedTexValid);
     assertFlushAccounting();
