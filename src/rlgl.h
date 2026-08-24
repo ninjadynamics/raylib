@@ -4440,8 +4440,23 @@ void rlDrawVertexArray(int offset, int count)
     /* Client pointers were installed after the queued batch flush. Resolve
      * only a still-pending texture disable before the direct draw. */
     if (__builtin_expect(rlDcBatch.pendingUnbind != 0, 0)) rlDcResolvePendingUnbind();
-#endif
+    /* Preserve glDrawArrays' public error contract.  The fused entry accepts
+     * only a valid non-negative range and deliberately treats short draws as
+     * no-ops; invalid API input must still reach GLdc's ordinary validator. */
+    if (__builtin_expect((offset < 0) || (count < 0), 0))
+    {
+        glDrawArrays(GL_TRIANGLES, offset, count);
+        return;
+    }
+    /* Ordinary non-indexed meshes (notably the generated skybox) already
+     * expose complete triangle soup through client arrays.  Feed that shape
+     * to GLdc's fused triangle writer instead of rebuilding the same generic
+     * glDrawArrays path; unsupported TnL/layout state falls back internally
+     * with identical GL_TRIANGLES semantics. */
+    glKosDrawTrianglesArrays(offset, count);
+#else
     glDrawArrays(GL_TRIANGLES, offset, count);
+#endif
 }
 
 // Draw vertex array elements
