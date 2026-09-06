@@ -760,6 +760,10 @@ RLAPI bool rlCheckRenderBatchLimit(int vCount);         // Check internal buffer
 RLAPI bool rlGetDcBatchStats(rlDcBatchStats *stats, unsigned int statsSize); // Size-checked Dreamcast stats snapshot
 RLAPI void rlResetDcBatchStats(void);                    // Reset Dreamcast batch stats; no-op when disabled
 RLAPI void rlDcExternalStateBarrier(void);               // Flush + invalidate before expert external rendering
+#define RL_DC_HAS_TEXTURED_QUAD_2D 1
+// Append TL/BL/BR/TR at z=0 with current color; false leaves all state untouched.
+RLAPI bool rlDcTryTexturedQuad2D(float x0, float y0, float x1, float y1,
+                                float u0, float v0, float u1, float v1);
 #if defined(GLDC_NATIVE_BENCH) && GLDC_NATIVE_BENCH
 #define RL_DC_NATIVE_BENCH_N3_CHECKED 0
 #define RL_DC_NATIVE_BENCH_F1_ONLY 1

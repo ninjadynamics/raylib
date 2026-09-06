@@ -268,10 +268,12 @@ static DCMeshData* dcLoadFile(const char* path) {
 fail:
     printf("[DCMesh] Error reading: %s\n", path);
     /* Cleanup partial load */
-    for (uint32_t i = 0; i < data->submesh_count; i++) {
-        free(data->submeshes[i].vertices);
-        free(data->submeshes[i].strips);
-        free(data->submeshes[i].vertex_map);
+    if (data->submeshes) {
+        for (uint32_t i = 0; i < data->submesh_count; i++) {
+            free(data->submeshes[i].vertices);
+            free(data->submeshes[i].strips);
+            free(data->submeshes[i].vertex_map);
+        }
     }
     free(data->submeshes);
     free(data);

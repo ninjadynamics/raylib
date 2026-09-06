@@ -421,6 +421,34 @@ static inline void rlDcAppendVertex(float x, float y, float z)
     v->bgra = rlDcBatch.curBGRA;
 }
 
+/* The common font quad is four adjacent appends with one color and no
+ * intervening state change. Check room once; an unsupported mode or capacity
+ * edge returns untouched so the caller retains the exact per-vertex fallback
+ * and its original flush boundary. This changes no GLdc submission contract. */
+bool rlDcTryTexturedQuad2D(float x0, float y0, float x1, float y1,
+                          float u0, float v0, float u1, float v1)
+{
+    if (rlDcBatch.active <= 0 || rlDcBatch.mode != RL_QUADS ||
+        (unsigned)rlDcBatch.count >
+            (RLDC_BATCH_CAPACITY + RLDC_BATCH_OVERFLOW - 4u)) return false;
+
+    RlDcBatchVertex *v = &rlDcBatch.verts[rlDcBatch.count];
+    const unsigned int color = rlDcBatch.curBGRA;
+    v[0].x = x0; v[0].y = y0; v[0].z = 0.0f;
+    v[0].u = u0; v[0].v = v0; v[0].bgra = color;
+    v[1].x = x0; v[1].y = y1; v[1].z = 0.0f;
+    v[1].u = u0; v[1].v = v1; v[1].bgra = color;
+    v[2].x = x1; v[2].y = y1; v[2].z = 0.0f;
+    v[2].u = u1; v[2].v = v1; v[2].bgra = color;
+    v[3].x = x1; v[3].y = y0; v[3].z = 0.0f;
+    v[3].u = u1; v[3].v = v0; v[3].bgra = color;
+    rlDcBatch.count += 4;
+    /* rlTexCoord2f is persistent even across rlEnd: retain the last corner. */
+    rlDcBatch.curU = u1;
+    rlDcBatch.curV = v0;
+    return true;
+}
+
 /* -------------------------------------------------------------------
  * Texture state management with deferred unbinding (Patch D)
  *
