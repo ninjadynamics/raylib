@@ -23,19 +23,13 @@
 
 #include <GL/gl.h>
 #include <GL/glkos.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <string.h>
 
-/* Parent builds can turn off only the new handoff while retaining the same
- * GLdc/raylib sources, which gives hardware A/B runs an attribution-safe
- * fallback binary. */
-#ifndef RLDC_USE_INTERLEAVED_FAST_PATH
-#define RLDC_USE_INTERLEAVED_FAST_PATH 1
-#endif
-
 /* N3 is independently switchable so a production-game hardware A/B can keep
  * the permanent N2 consumers and synchronous F1 fallback identical on both
- * sides. Disabling the older interleaved switch still disables both lanes. */
+ * sides. F1 is permanent whenever the linked GLdc API supports it. */
 #ifndef RLDC_USE_FINAL_PACKET_FAST_PATH
 #define RLDC_USE_FINAL_PACKET_FAST_PATH 0
 #endif
@@ -65,8 +59,7 @@
 #error "RLDC_HYPERSOLAR_TRUSTED_N3 must be 0 or 1"
 #endif
 
-#if RLDC_USE_INTERLEAVED_FAST_PATH && \
-    defined(GL_KOS_HAS_INTERLEAVED_P3T2BGRA) && \
+#if defined(GL_KOS_HAS_INTERLEAVED_P3T2BGRA) && \
     defined(GL_KOS_FAST_PATH_ABI_VERSION) && \
     (GL_KOS_HAS_INTERLEAVED_P3T2BGRA != 0) && \
     (GL_KOS_FAST_PATH_ABI_VERSION == 3u)
@@ -75,8 +68,7 @@
 #define RLDC_HAS_INTERLEAVED_P3T2BGRA 0
 #endif
 
-#if RLDC_USE_INTERLEAVED_FAST_PATH && \
-    RLDC_USE_FINAL_PACKET_FAST_PATH && \
+#if RLDC_USE_FINAL_PACKET_FAST_PATH && \
     defined(GL_KOS_HAS_FINAL_INTERLEAVED_P3T2BGRA) && \
     defined(GL_KOS_HAS_TRUSTED_FINAL_INTERLEAVED_P3T2BGRA) && \
     defined(GL_KOS_FAST_PATH_ABI_VERSION) && \
