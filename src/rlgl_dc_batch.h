@@ -27,57 +27,13 @@
 #include <stddef.h>
 #include <string.h>
 
-/* N3 is independently switchable so a production-game hardware A/B can keep
- * the permanent N2 consumers and synchronous F1 fallback identical on both
- * sides. F1 is permanent whenever the linked GLdc API supports it. */
-#ifndef RLDC_USE_FINAL_PACKET_FAST_PATH
-#define RLDC_USE_FINAL_PACKET_FAST_PATH 0
-#endif
-#if RLDC_USE_FINAL_PACKET_FAST_PATH != 0 && RLDC_USE_FINAL_PACKET_FAST_PATH != 1
-#error "RLDC_USE_FINAL_PACKET_FAST_PATH must be 0 or 1"
-#endif
-
-/* Final-packet construction has a fixed transactional cost which only pays
- * back once a batch is large enough. The generic fork leaves the threshold at
- * zero; HyperSolar's parent build selects the hardware-informed cutoff. */
-#ifndef RLDC_FINAL_PACKET_MIN_VERTICES
-#define RLDC_FINAL_PACKET_MIN_VERTICES 0
-#endif
-#if RLDC_FINAL_PACKET_MIN_VERTICES < 0
-#error "RLDC_FINAL_PACKET_MIN_VERTICES must not be negative"
-#endif
-
-/* The trusted N3 writer is not a general rlgl property: public rlVertex,
- * rlTexCoord and matrix calls accept arbitrary floats. HyperSolar's parent
- * build may assert its game-owned finite source/matrix/depth contract; every
- * other consumer defaults to checked N3. This is a contract selector, not a
- * hardware A/B switch. */
-#ifndef RLDC_HYPERSOLAR_TRUSTED_N3
-#define RLDC_HYPERSOLAR_TRUSTED_N3 0
-#endif
-#if RLDC_HYPERSOLAR_TRUSTED_N3 != 0 && RLDC_HYPERSOLAR_TRUSTED_N3 != 1
-#error "RLDC_HYPERSOLAR_TRUSTED_N3 must be 0 or 1"
-#endif
-
 #if defined(GL_KOS_HAS_INTERLEAVED_P3T2BGRA) && \
     defined(GL_KOS_FAST_PATH_ABI_VERSION) && \
     (GL_KOS_HAS_INTERLEAVED_P3T2BGRA != 0) && \
-    (GL_KOS_FAST_PATH_ABI_VERSION == 3u)
+    (GL_KOS_FAST_PATH_ABI_VERSION == 4u)
 #define RLDC_HAS_INTERLEAVED_P3T2BGRA 1
 #else
 #define RLDC_HAS_INTERLEAVED_P3T2BGRA 0
-#endif
-
-#if RLDC_USE_FINAL_PACKET_FAST_PATH && \
-    defined(GL_KOS_HAS_FINAL_INTERLEAVED_P3T2BGRA) && \
-    defined(GL_KOS_HAS_TRUSTED_FINAL_INTERLEAVED_P3T2BGRA) && \
-    defined(GL_KOS_FAST_PATH_ABI_VERSION) && \
-    (GL_KOS_HAS_FINAL_INTERLEAVED_P3T2BGRA != 0) && \
-    (GL_KOS_HAS_TRUSTED_FINAL_INTERLEAVED_P3T2BGRA != 0) && \
-    (GL_KOS_FAST_PATH_ABI_VERSION == 3u)
-#define RLDC_HAS_FINAL_INTERLEAVED_P3T2BGRA 1
-#else
-#define RLDC_HAS_FINAL_INTERLEAVED_P3T2BGRA 0
 #endif
 
 /* -------------------------------------------------------------------
@@ -105,7 +61,7 @@
  *   color:    GL_BGRA x GL_UNSIGNED_BYTE (BGRA byte order)
  * Total: 24 bytes per vertex, no padding needed.
  * ---------------------------------------------------------------- */
-#if RLDC_HAS_INTERLEAVED_P3T2BGRA || RLDC_HAS_FINAL_INTERLEAVED_P3T2BGRA
+#if RLDC_HAS_INTERLEAVED_P3T2BGRA
 typedef GLKosVertexP3T2BGRA RlDcBatchVertex;
 #else
 typedef struct {
@@ -175,57 +131,12 @@ typedef struct {
     unsigned int statCancelledUnbinds;
     unsigned int statInterleavedHits;
     unsigned int statInterleavedFallbacks;
-    unsigned int statFinalPacketHits;
-    unsigned int statFinalPacketFallbacks;
 #endif
 } RlDcBatch;
 
 /* Single global batcher instance. Keep the 100 KB vertex arena in .bss;
  * rlDcResetState() is the authoritative initializer for non-zero defaults. */
 static RlDcBatch rlDcBatch;
-
-#if defined(GLDC_NATIVE_BENCH) && GLDC_NATIVE_BENCH
-/* One benchmark-only route word preserves the checked/F1/trusted selector
- * without letting extra control globals perturb the adjacent hot arena. */
-static int rlDcNativeBenchN3Route;
-#endif
-
-static inline int rlDcFinalPacketEnabled(void)
-{
-#if defined(GLDC_NATIVE_BENCH) && GLDC_NATIVE_BENCH
-    return rlDcNativeBenchN3Route != 1;
-#else
-    return 1;
-#endif
-}
-
-#if RLDC_HAS_FINAL_INTERLEAVED_P3T2BGRA
-static inline GLboolean rlDcTryFinalPacket(
-    GLenum mode, const RlDcBatchVertex *vertices, GLsizei count)
-{
-#if defined(GLDC_NATIVE_BENCH) && GLDC_NATIVE_BENCH
-    /* Route 1 is filtered by rlDcFinalPacketEnabled(). Keep the checked and
-     * trusted hardware controls independent of the parent game contract. */
-    if (rlDcNativeBenchN3Route == 2)
-        return glKosTryQueueTrustedFinalInterleavedP3T2BGRA(
-            mode, vertices, count);
-    return glKosTryQueueFinalInterleavedP3T2BGRA(
-        mode, vertices, count);
-#elif RLDC_HYPERSOLAR_TRUSTED_N3
-    /* This seam is private to HyperSolar's captured P3/T2/BGRA batch. Its source
-     * positions/UVs and the current matrices must be finite; every accepted
-     * transformed record must have finite X/Y/UV and positive finite inverse
-     * depth. GLdc still classifies every transformed vertex and commits only
-     * an all-visible batch. Near/ambiguous input returns false and therefore
-     * takes the synchronous F1/exact-client-array fallback below. */
-    return glKosTryQueueTrustedFinalInterleavedP3T2BGRA(
-        mode, vertices, count);
-#else
-    return glKosTryQueueFinalInterleavedP3T2BGRA(
-        mode, vertices, count);
-#endif
-}
-#endif
 
 static inline void rlDcResetState(void)
 {
@@ -242,9 +153,6 @@ static inline void rlDcResetState(void)
     rlDcBatch.framebufferWidth = 0;
     rlDcBatch.framebufferHeight = 0;
     rlDcBatch.lineWidth = 1.0f;
-#if defined(GLDC_NATIVE_BENCH) && GLDC_NATIVE_BENCH
-    rlDcNativeBenchN3Route = 0;
-#endif
 #ifdef RLDC_ENABLE_STATS
     rlDcBatch.statFlushes = 0;
     rlDcBatch.statFlushTexChange = 0;
@@ -257,8 +165,6 @@ static inline void rlDcResetState(void)
     rlDcBatch.statCancelledUnbinds = 0;
     rlDcBatch.statInterleavedHits = 0;
     rlDcBatch.statInterleavedFallbacks = 0;
-    rlDcBatch.statFinalPacketHits = 0;
-    rlDcBatch.statFinalPacketFallbacks = 0;
 #endif
 }
 
@@ -279,8 +185,6 @@ __attribute__((unused)) static void rlDcResetStats(void) {
     rlDcBatch.statCancelledUnbinds = 0;
     rlDcBatch.statInterleavedHits = 0;
     rlDcBatch.statInterleavedFallbacks = 0;
-    rlDcBatch.statFinalPacketHits = 0;
-    rlDcBatch.statFinalPacketFallbacks = 0;
 }
 #else
 #define RLDC_STAT_INC(f)  ((void)0)
@@ -290,9 +194,9 @@ __attribute__((unused)) static void rlDcResetStats(void) {}
 /* -------------------------------------------------------------------
  * Core: Flush the batcher
  *
- * Submits all accumulated vertices to GLdc in one call. A paired GLdc first
- * snapshots a final N3 packet, then tries synchronous F1; an ineligible case
- * takes the exact client-array fallback below.
+ * Submits all accumulated vertices to GLdc in one call. A paired GLdc tries
+ * synchronous F1; an ineligible case takes the exact client-array fallback
+ * below.
  * ---------------------------------------------------------------- */
 static void rlDcFlushBatch(void)
 {
@@ -321,22 +225,6 @@ static void rlDcFlushBatch(void)
         rlDcBatch.lastFlushedTexId = rlDcBatch.textureId;
         rlDcBatch.lastFlushedTexValid = 1;
     }
-
-#if RLDC_HAS_FINAL_INTERLEAVED_P3T2BGRA
-    /* Trusted N3 copies final TA records into GLdc-owned RAM before returning.
-     * GLdc accepts only a proven all-visible batch. That makes this transient
-     * arena safe to reuse while preserving active-list chronology at the later
-     * GLdc drain; any decline retains the exact synchronous fallbacks. */
-    if (rlDcBatch.count >= RLDC_FINAL_PACKET_MIN_VERTICES &&
-        rlDcFinalPacketEnabled()) {
-        if (rlDcTryFinalPacket(glMode, rlDcBatch.verts, rlDcBatch.count)) {
-            RLDC_STAT_INC(statFinalPacketHits);
-            rlDcBatch.count = 0;
-            return;
-        }
-        RLDC_STAT_INC(statFinalPacketFallbacks);
-    }
-#endif
 
 #if RLDC_HAS_INTERLEAVED_P3T2BGRA
     /* The paired GLdc lane consumes this borrowed stream before returning and
@@ -609,16 +497,6 @@ static void rlDcFlushAll(void)
         rlDcBatch.lastFlushedTexValid = 0;  /* GL state changed outside batcher */
     }
 }
-
-#if defined(GLDC_NATIVE_BENCH) && GLDC_NATIVE_BENCH
-/* Flush under the old route before changing the benchmark seam. Invalid
- * values deliberately normalize to the production checked-N3 route. */
-static inline void rlDcNativeBenchSelectN3RouteInternal(int route)
-{
-    rlDcFlushAll();
-    rlDcNativeBenchN3Route = (route == 1 || route == 2) ? route : 0;
-}
-#endif
 
 #if defined(__GNUC__) || defined(__clang__)
 __attribute__((cold, noinline, unused))

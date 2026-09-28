@@ -433,7 +433,7 @@ typedef struct rlRenderBatch {
 #if defined(PLATFORM_DREAMCAST) || defined(DREAMCAST)
 // Snapshot exported by the Dreamcast immediate-mode batcher when
 // RLDC_ENABLE_STATS is compiled in. The query returns false otherwise.
-#define RLDC_BATCH_STATS_VERSION 2
+#define RLDC_BATCH_STATS_VERSION 3
 typedef struct rlDcBatchStats {
     unsigned int structSize;
     unsigned int abiVersion;
@@ -448,8 +448,6 @@ typedef struct rlDcBatchStats {
     unsigned int cancelledUnbinds;
     unsigned int interleavedHits;
     unsigned int interleavedFallbacks;
-    unsigned int finalPacketHits;
-    unsigned int finalPacketFallbacks;
 } rlDcBatchStats;
 #endif
 
@@ -764,12 +762,6 @@ RLAPI void rlDcExternalStateBarrier(void);               // Flush + invalidate b
 // Append TL/BL/BR/TR at z=0 with current color; false leaves all state untouched.
 RLAPI bool rlDcTryTexturedQuad2D(float x0, float y0, float x1, float y1,
                                 float u0, float v0, float u1, float v1);
-#if defined(GLDC_NATIVE_BENCH) && GLDC_NATIVE_BENCH
-#define RL_DC_NATIVE_BENCH_N3_CHECKED 0
-#define RL_DC_NATIVE_BENCH_F1_ONLY 1
-#define RL_DC_NATIVE_BENCH_N3_TRUSTED 2
-RLAPI void rlDcNativeBenchSelectN3Route(int route);       // Same-build checked/F1/trusted timing control
-#endif
 #endif
 
 RLAPI void rlSetTexture(unsigned int id);               // Set current texture for render batch and check buffers limits
@@ -3552,8 +3544,6 @@ bool rlGetDcBatchStats(rlDcBatchStats *stats, unsigned int statsSize)
     stats->cancelledUnbinds = rlDcBatch.statCancelledUnbinds;
     stats->interleavedHits = rlDcBatch.statInterleavedHits;
     stats->interleavedFallbacks = rlDcBatch.statInterleavedFallbacks;
-    stats->finalPacketHits = rlDcBatch.statFinalPacketHits;
-    stats->finalPacketFallbacks = rlDcBatch.statFinalPacketFallbacks;
     return true;
 #else
     (void)stats;
@@ -3572,12 +3562,6 @@ void rlDcExternalStateBarrier(void)
     rlDcExternalStateBarrierInternal();
 }
 
-#if defined(GLDC_NATIVE_BENCH) && GLDC_NATIVE_BENCH
-void rlDcNativeBenchSelectN3Route(int route)
-{
-    rlDcNativeBenchSelectN3RouteInternal(route);
-}
-#endif
 #endif
 
 // Check internal buffer overflow for a given number of vertex
