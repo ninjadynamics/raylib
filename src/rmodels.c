@@ -1327,7 +1327,7 @@ BoundingBox GetModelBoundingBox(Model model)
 void UploadMesh(Mesh *mesh, bool dynamic)
 {
     if (mesh == NULL) return;
-#if (defined(PLATFORM_DREAMCAST) && defined(ENABLE_STRIPS))
+#if defined(PLATFORM_DREAMCAST) && ENABLE_STRIPS
     // Transparent routing: if this mesh has dcmesh strip data,
     // sync positions and colors to strip vertices and return.
     if (dcMeshHandleUpload(mesh, dynamic)) return;
@@ -1538,7 +1538,7 @@ void UpdateMeshBuffer(Mesh mesh, int index, const void *data, int dataSize, int 
 
     void *destination = (unsigned char *)target + offset;
     if (destination != data) memcpy(destination, data, (size_t)dataSize);
-#if defined(ENABLE_STRIPS)
+#if ENABLE_STRIPS
     if (index == RL_DEFAULT_SHADER_ATTRIB_LOCATION_COLOR) dcMeshSyncColors(&mesh);
     else dcMeshHandleUpload(&mesh, false);
 #endif
@@ -2095,7 +2095,7 @@ void DrawMeshInstanced(Mesh mesh, Material material, const Matrix *transforms, i
 // Unload mesh from memory (RAM and VRAM)
 void UnloadMesh(Mesh mesh)
 {
-#if defined(PLATFORM_DREAMCAST) && defined(ENABLE_STRIPS)
+#if defined(PLATFORM_DREAMCAST) && ENABLE_STRIPS
     dcMeshUnloadMesh(&mesh);
 #endif
     // Unload rlgl mesh vboId data

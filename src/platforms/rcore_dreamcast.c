@@ -545,7 +545,14 @@ int InitPlatform(void)
 {
 
     TRACELOG(LOG_INFO, "PLATFORM: calling dreamcast gl init");
-    glKosInit();
+    // DC rlBegin routes quads/triangles to the rlgl batcher and drops lines,
+    // so GLdc immediate mode (glBegin) has no live caller: give it the
+    // 256-record aligned_vector minimum instead of 4096 records (256 KiB).
+    // It still grows on demand if a direct glBegin caller appears.
+    GLdcConfig glConfig;
+    glKosInitConfig(&glConfig);
+    glConfig.initial_immediate_capacity = 256;
+    glKosInitEx(&glConfig);
     
 
 
