@@ -84,6 +84,8 @@ typedef struct {
     DCVertex *vertices;         /* Allocated vertex array */
     DCStrip  *strips;           /* Allocated strip array */
     uint16_t *vertex_map;       /* Maps strip vertex -> original vertex index */
+    float bound[4];             /* Enclosing sphere x, y, z, radius (runtime) */
+    uint32_t bound_valid;       /* 0 until computed; cleared when positions change */
 } DCSubmesh;
 
 /* -------------------------------------------------------------------

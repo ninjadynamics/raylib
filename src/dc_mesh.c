@@ -37,6 +37,10 @@
     !(GL_KOS_HAS_DEFERRED_P3T2BGRA_TRIANGLES)
 #error "raylib-dc requires GLdc deferred triangle support"
 #endif
+#if !defined(GL_KOS_HAS_DEFERRED_P3T2BGRA_MESH_BOUND) || \
+    !(GL_KOS_HAS_DEFERRED_P3T2BGRA_MESH_BOUND)
+#error "raylib-dc requires GLdc deferred mesh-bound support"
+#endif
 #if !defined(GL_KOS_FAST_PATH_ABI_VERSION) || GL_KOS_FAST_PATH_ABI_VERSION != 4u
 #error "raylib-dc requires GLdc fast-path ABI 3"
 #endif
@@ -91,9 +95,46 @@ typedef struct {
     uint32_t *tint_colors;
     uint32_t last_tint;
     int tint_valid;
+    float bound[4];
 } DCMeshBatchCache;
 
 static DCMeshBatchCache dc_batch_caches[DC_MESH_BATCH_CACHE_MAX] = {0};
+
+/* The submesh's enclosing sphere, for GLdc's deferred model lanes: the box
+ * center and the farthest vertex from it, padded past float rounding.
+ * Computed on first use and again after any position change. */
+static const float *dcSubmeshBound(DCSubmesh *sm) {
+    if (sm->bound_valid) return sm->bound;
+
+    const DCVertex *v = sm->vertices;
+    float lo[3] = { v[0].x, v[0].y, v[0].z };
+    float hi[3] = { v[0].x, v[0].y, v[0].z };
+    for (uint32_t i = 1; i < sm->vertex_count; i++) {
+        if (v[i].x < lo[0]) lo[0] = v[i].x;
+        if (v[i].x > hi[0]) hi[0] = v[i].x;
+        if (v[i].y < lo[1]) lo[1] = v[i].y;
+        if (v[i].y > hi[1]) hi[1] = v[i].y;
+        if (v[i].z < lo[2]) lo[2] = v[i].z;
+        if (v[i].z > hi[2]) hi[2] = v[i].z;
+    }
+    const float cx = (lo[0] + hi[0])*0.5f;
+    const float cy = (lo[1] + hi[1])*0.5f;
+    const float cz = (lo[2] + hi[2])*0.5f;
+    float r2 = 0.0f;
+    for (uint32_t i = 0; i < sm->vertex_count; i++) {
+        const float dx = v[i].x - cx;
+        const float dy = v[i].y - cy;
+        const float dz = v[i].z - cz;
+        const float d2 = dx*dx + dy*dy + dz*dz;
+        if (d2 > r2) r2 = d2;
+    }
+    sm->bound[0] = cx;
+    sm->bound[1] = cy;
+    sm->bound[2] = cz;
+    sm->bound[3] = sqrtf(r2)*1.0001f;
+    sm->bound_valid = 1;
+    return sm->bound;
+}
 
 static void dcBatchFreeCachesForData(DCMeshData *data);
 static void dcFreeData(DCMeshData *data);
@@ -537,6 +578,7 @@ static int dcBatchBuildCache(DCMeshBatchCache *cache, DCMeshData *data, int subm
     cache->vertex_count = vertex_count;
     cache->tint_colors = colors;
     cache->tint_valid = 0;
+    memcpy(cache->bound, dcSubmeshBound(sm), sizeof(cache->bound));
     return 1;
 }
 
@@ -669,9 +711,9 @@ void dcMeshBatchDraw(Matrix transform, Color tint) {
      * overwritten by the next instance, so they must remain synchronous. */
     GLboolean deferred = GL_FALSE;
     if (!needs_tint && cache->vertex_count <= (uint32_t)INT_MAX) {
-        deferred = glKosTryDeferTrianglesP3T2BGRASwapStable(
+        deferred = glKosTryDeferTrianglesP3T2BGRABoundSwapStable(
             (const GLKosVertexP3T2BGRA *)cache->vertices,
-            (GLsizei)cache->vertex_count);
+            (GLsizei)cache->vertex_count, cache->bound);
     }
     if (!deferred) {
         /* Fused-lane submission (2026-07-15): this exact synchronous fallback
@@ -759,11 +801,11 @@ static void dcDrawSubmesh(DCSubmesh* sm, Material material, Matrix transform) {
     GLboolean deferred = GL_FALSE;
     if (sm->vertex_count <= (uint32_t)INT_MAX &&
         sm->strip_count <= (uint32_t)INT_MAX) {
-        deferred = glKosTryDeferMultiStripsP3T2BGRASwapStable(
+        deferred = glKosTryDeferMultiStripsP3T2BGRABoundSwapStable(
             (const GLKosVertexP3T2BGRA *)sm->vertices,
             (GLsizei)sm->vertex_count,
             (const GLKosStripRange *)sm->strips,
-            (GLsizei)sm->strip_count);
+            (GLsizei)sm->strip_count, dcSubmeshBound(sm));
     }
 
     if (!deferred) {
@@ -898,6 +940,7 @@ static void dcMeshSyncFromRaylib(Mesh *mesh) {
             sm->vertices[v].y = verts[si * 3 + 1];
             sm->vertices[v].z = verts[si * 3 + 2];
         }
+        sm->bound_valid = 0;
     }
 
     /* Sync colors in the Dreamcast-native packed BGRA producer layout.
@@ -1027,6 +1070,7 @@ void dcMeshRecenterGeometry(Model *model, float offsetX, float offsetY, float of
             sm->vertices[v].y -= offsetY;
             sm->vertices[v].z -= offsetZ;
         }
+        sm->bound_valid = 0;
 
         dcBatchFreeCachesForData(data);
     }
